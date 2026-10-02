@@ -1,12 +1,14 @@
 /**
- * abot-health v1 — 个人健康数据服务
- * 病历/处方/体检/疫苗，MCP 给 agent 用（经网关聚合）
+ * abot-health — 健康数据服务
+ * 病人、就诊、处方、检查报告、报告附件、疫苗。MCP 给 agent 用（经网关聚合）
  *
  * 安全约定：
  * - /mcp 只接受网关的 X-Internal-Token
  * - 必须携带 X-Abot-Owner-Email（网关从 OAuth token 注入）；
- *   若配置了 OWNER_EMAIL，则必须与之匹配（单家庭模式）
- * - 所有写操作校验 patient_id 存在
+ *   若配置了 OWNER_EMAIL，则必须与之匹配
+ * - 病人可以是任何人；relationship / notes 可选，只用于区分身份
+ * - 病历与附件按 patient_id 隔离；写操作校验病人存在
+ * - 附件存在 R2（binding FILES），元数据在 D1；仅 jpg/png/webp/pdf，单文件 10MB
  */
 
 function newId(prefix) {
@@ -33,6 +35,85 @@ class InputError extends Error {
   }
 }
 
+const MAX_FILE_BYTES = 10 * 1024 * 1024;
+
+const FILE_TYPES = [
+  { ext: "jpg", mime: "image/jpeg", check: isJpeg },
+  { ext: "jpeg", mime: "image/jpeg", check: isJpeg },
+  { ext: "png", mime: "image/png", check: isPng },
+  { ext: "webp", mime: "image/webp", check: isWebp },
+  { ext: "pdf", mime: "application/pdf", check: isPdf },
+];
+
+function isJpeg(b) {
+  return b.length >= 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff;
+}
+function isPng(b) {
+  return b.length >= 8
+    && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47
+    && b[4] === 0x0d && b[5] === 0x0a && b[6] === 0x1a && b[7] === 0x0a;
+}
+function isWebp(b) {
+  return b.length >= 12
+    && b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46
+    && b[8] === 0x57 && b[9] === 0x45 && b[10] === 0x42 && b[11] === 0x50;
+}
+function isPdf(b) {
+  return b.length >= 5
+    && b[0] === 0x25 && b[1] === 0x50 && b[2] === 0x44 && b[3] === 0x46 && b[4] === 0x2d;
+}
+
+function decodeBase64(input) {
+  if (typeof input !== "string" || !input.trim()) throw new InputError("content_required");
+  let b64 = input.trim();
+  const dataUrl = b64.match(/^data:[^;,]+;base64,([\s\S]*)$/i);
+  if (dataUrl) b64 = dataUrl[1];
+  b64 = b64.replace(/\s/g, "");
+  if (!b64 || b64.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(b64)) {
+    throw new InputError("invalid_base64");
+  }
+  const pad = b64.endsWith("==") ? 2 : b64.endsWith("=") ? 1 : 0;
+  const declared = (b64.length / 4) * 3 - pad;
+  if (declared > MAX_FILE_BYTES) throw new InputError("file_too_large");
+  if (declared === 0) throw new InputError("empty_file");
+  let bin;
+  try { bin = atob(b64); } catch { throw new InputError("invalid_base64"); }
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i) & 0xff;
+  if (out.length !== declared || out.length > MAX_FILE_BYTES) throw new InputError("file_too_large");
+  return out;
+}
+
+function bytesToBase64(bytes) {
+  let s = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    s += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(s);
+}
+
+function classifyFile(filename, bytes) {
+  if (typeof filename !== "string" || !filename.trim()) throw new InputError("filename_required");
+  const base = filename.trim().split(/[/\\]/).pop();
+  if (!base || base === "." || base === ".." || base.length > 200 || /[\u0000-\u001f]/.test(base)) {
+    throw new InputError("invalid_filename");
+  }
+  const dot = base.lastIndexOf(".");
+  const ext = dot > 0 ? base.slice(dot + 1).toLowerCase() : "";
+  const type = FILE_TYPES.find((t) => t.ext === ext);
+  if (!type) throw new InputError("unsupported_file_type");
+  if (!type.check(bytes)) throw new InputError("file_type_mismatch");
+  return { filename: base, mime: type.mime };
+}
+
+function requireBucket(env) {
+  if (!env.FILES || typeof env.FILES.put !== "function" || typeof env.FILES.get !== "function") {
+    throw new Error("r2_not_configured");
+  }
+  return env.FILES;
+}
+
 async function ensureTables(env) {
   const stmts = [
     `CREATE TABLE IF NOT EXISTS patients (
@@ -52,6 +133,11 @@ async function ensureTables(env) {
       id TEXT PRIMARY KEY, patient_id TEXT NOT NULL, report_date TEXT NOT NULL,
       report_type TEXT, summary TEXT, file_url TEXT,
       created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')))`,
+    `CREATE TABLE IF NOT EXISTS lab_report_files (
+      id TEXT PRIMARY KEY, patient_id TEXT NOT NULL, lab_report_id TEXT,
+      filename TEXT NOT NULL, mime TEXT NOT NULL, size INTEGER NOT NULL,
+      r2_key TEXT NOT NULL,
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')))`,
     `CREATE TABLE IF NOT EXISTS vaccinations (
       id TEXT PRIMARY KEY, patient_id TEXT NOT NULL, vaccine_name TEXT NOT NULL,
       dose_number INTEGER, total_doses INTEGER,
@@ -63,7 +149,7 @@ async function ensureTables(env) {
   }
 }
 
-// 每个 isolate 只建一次表，避免每请求 5 次 D1 写入
+// 每个 isolate 只建一次表，避免每请求重复 D1 写入
 let tablesReady = null;
 function ensureTablesCached(env) {
   if (!tablesReady) tablesReady = ensureTables(env);
@@ -71,11 +157,13 @@ function ensureTablesCached(env) {
 }
 
 const MCP_TOOLS = [
-  { name: "add_patient", description: "添加家庭成员（病人）",
+  { name: "add_patient", description: "添加病人（任意人）。relationship 与 notes 可选，用于区分身份",
     inputSchema: { type: "object", properties: {
-      name: { type: "string" }, relationship: { type: "string", description: "本人/父亲/母亲/…" },
-      dob: { type: "string" }, notes: { type: "string" } }, required: ["name"] } },
-  { name: "list_patients", description: "列出所有家庭成员",
+      name: { type: "string" },
+      relationship: { type: "string", description: "可选。身份或与记录者的关系，如本人、亲属、朋友、同事" },
+      dob: { type: "string" },
+      notes: { type: "string", description: "可选备注，用于区分病人" } }, required: ["name"] } },
+  { name: "list_patients", description: "列出所有病人",
     inputSchema: { type: "object", properties: {} } },
   { name: "add_visit", description: "添加就诊记录",
     inputSchema: { type: "object", properties: {
@@ -104,6 +192,22 @@ const MCP_TOOLS = [
       required: ["patient_id", "report_date"] } },
   { name: "list_lab_reports", description: "列出检查报告",
     inputSchema: { type: "object", properties: { patient_id: { type: "string" } } } },
+  { name: "upload_lab_report_file", description: "上传检查报告附件（jpg/png/webp/pdf，单文件 10MB），返回 file_id",
+    inputSchema: { type: "object", properties: {
+      patient_id: { type: "string" },
+      lab_report_id: { type: "string", description: "可选，关联到某条检查报告；必须属于同一病人" },
+      filename: { type: "string", description: "原始文件名，用于判断类型" },
+      content_base64: { type: "string", description: "文件内容的 base64" } },
+      required: ["patient_id", "filename", "content_base64"] } },
+  { name: "get_lab_report_file", description: "下载检查报告附件。必须带所属 patient_id，不能读取其他病人的文件",
+    inputSchema: { type: "object", properties: {
+      patient_id: { type: "string" }, file_id: { type: "string" } },
+      required: ["patient_id", "file_id"] } },
+  { name: "list_lab_report_files", description: "列出某病人的检查报告附件（不含文件内容）",
+    inputSchema: { type: "object", properties: {
+      patient_id: { type: "string" },
+      lab_report_id: { type: "string" } },
+      required: ["patient_id"] } },
   { name: "add_vaccination", description: "添加疫苗接种记录",
     inputSchema: { type: "object", properties: {
       patient_id: { type: "string" }, vaccine_name: { type: "string" },
@@ -123,15 +227,22 @@ async function requirePatient(DB, patient_id) {
   if (!row) throw new InputError("patient_not_found");
 }
 
+async function requireOwnLabReport(DB, lab_report_id, patient_id) {
+  if (!lab_report_id) return null;
+  const row = await DB.prepare("SELECT id, patient_id FROM lab_reports WHERE id=?").bind(lab_report_id).first();
+  if (!row || row.patient_id !== patient_id) throw new InputError("lab_report_not_found");
+  return row;
+}
+
 async function callTool(name, args, env) {
   await ensureTablesCached(env);
   const DB = env.DB;
 
   if (name === "add_patient") {
-    if (!args.name) throw new InputError("name_required");
+    if (!args.name || !String(args.name).trim()) throw new InputError("name_required");
     const id = newId("pat");
     await DB.prepare("INSERT INTO patients (id,name,relationship,dob,notes) VALUES (?,?,?,?,?)")
-      .bind(id, args.name, args.relationship || null, args.dob || null, args.notes || null).run();
+      .bind(id, String(args.name).trim(), args.relationship || null, args.dob || null, args.notes || null).run();
     return { id };
   }
   if (name === "list_patients") {
@@ -200,6 +311,68 @@ async function callTool(name, args, env) {
     const r = await DB.prepare(sql).bind(...params).all();
     return { lab_reports: r.results };
   }
+  if (name === "upload_lab_report_file") {
+    await requirePatient(DB, args.patient_id);
+    await requireOwnLabReport(DB, args.lab_report_id, args.patient_id);
+    const bytes = decodeBase64(args.content_base64);
+    const { filename, mime } = classifyFile(args.filename, bytes);
+    const bucket = requireBucket(env);
+    const id = newId("file");
+    const patientId = args.patient_id;
+    const r2Key = `patients/${patientId}/lab-files/${id}`;
+    await bucket.put(r2Key, bytes, { httpMetadata: { contentType: mime } });
+    try {
+      await DB.prepare(`INSERT INTO lab_report_files (id,patient_id,lab_report_id,filename,mime,size,r2_key)
+        VALUES (?,?,?,?,?,?,?)`).bind(id, args.patient_id, args.lab_report_id || null,
+        filename, mime, bytes.length, r2Key).run();
+    } catch (err) {
+      try { await bucket.delete(r2Key); } catch { /* 元数据写入失败时尽量清掉对象 */ }
+      throw err;
+    }
+    return { file_id: id };
+  }
+  if (name === "get_lab_report_file") {
+    await requirePatient(DB, args.patient_id);
+    if (!args.file_id) throw new InputError("file_id_required");
+    const row = await DB.prepare(
+      "SELECT id, patient_id, lab_report_id, filename, mime, size, r2_key FROM lab_report_files WHERE id=? AND patient_id=?"
+    ).bind(args.file_id, args.patient_id).first();
+    const patientId = args.patient_id;
+    const prefix = `patients/${patientId}/`;
+    if (!row || typeof row.r2_key !== "string" || !row.r2_key.startsWith(prefix)) {
+      throw new InputError("file_not_found");
+    }
+    const obj = await requireBucket(env).get(row.r2_key);
+    if (!obj) throw new InputError("file_not_found");
+    const buf = new Uint8Array(await obj.arrayBuffer());
+    return {
+      file_id: row.id,
+      patient_id: row.patient_id,
+      lab_report_id: row.lab_report_id,
+      filename: row.filename,
+      mime: row.mime,
+      size: row.size,
+      content_base64: bytesToBase64(buf),
+    };
+  }
+  if (name === "list_lab_report_files") {
+    await requirePatient(DB, args.patient_id);
+    let sql = "SELECT id, patient_id, lab_report_id, filename, mime, size, r2_key, created_at FROM lab_report_files WHERE patient_id=?";
+    const params = [args.patient_id];
+    if (args.lab_report_id) { sql += " AND lab_report_id=?"; params.push(args.lab_report_id); }
+    sql += " ORDER BY created_at DESC";
+    const r = await DB.prepare(sql).bind(...params).all();
+    const files = (r.results || []).map((row) => ({
+      file_id: row.id,
+      patient_id: row.patient_id,
+      lab_report_id: row.lab_report_id,
+      filename: row.filename,
+      mime: row.mime,
+      size: row.size,
+      created_at: row.created_at,
+    }));
+    return { files };
+  }
   if (name === "add_vaccination") {
     await requirePatient(DB, args.patient_id);
     if (!args.vaccine_name) throw new InputError("vaccine_name_required");
@@ -257,7 +430,7 @@ export default {
       if (!ownerEmail) {
         return Response.json({ error: "owner email required" }, { status: 401 });
       }
-      // 单家庭模式：若配置了 OWNER_EMAIL，必须匹配，防止直连绕过网关身份
+      // 部署身份校验：配置了 OWNER_EMAIL 时必须匹配，防止直连绕过网关身份
       if (env.OWNER_EMAIL && ownerEmail !== env.OWNER_EMAIL) {
         return Response.json({ error: "unauthorized" }, { status: 401 });
       }
@@ -269,7 +442,7 @@ export default {
         if (msg.method === "initialize") {
           return Response.json({ jsonrpc: "2.0", id, result: {
             protocolVersion: "2025-06-18", capabilities: { tools: {} },
-            serverInfo: { name: "abot-health-mcp", version: "1.0.1" } } });
+            serverInfo: { name: "abot-health-mcp", version: "1.1.0" } } });
         }
         if (msg.method === "tools/list") {
           return Response.json({ jsonrpc: "2.0", id, result: { tools: MCP_TOOLS } });

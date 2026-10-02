@@ -23,7 +23,7 @@ ok(src.includes("safeEqual"), "static: constant-time token compare");
 
 // ---------- 内存 fake D1 ----------
 function fakeD1() {
-  const tables = { patients: [], visits: [], prescriptions: [], lab_reports: [], vaccinations: [] };
+  const tables = { patients: [], visits: [], prescriptions: [], lab_reports: [], lab_report_files: [], vaccinations: [] };
   const norm = (s) => s.replace(/\s+/g, " ").trim();
   const stripWhere11 = (w) => w.replace(/^1\s*=\s*1\s*(AND\s+)?/i, "").replace(/\s+AND\s+1\s*=\s*1/i, "").trim();
 
@@ -137,8 +137,30 @@ function fakeD1() {
 // ---------- 功能测试 ----------
 const TOKEN = "internal-test-token";
 const EMAIL = "eric@abot.run";
+function fakeR2() {
+  const objects = new Map();
+  return {
+    async put(key, value, options) {
+      const bytes = value instanceof Uint8Array ? new Uint8Array(value) : new Uint8Array(value);
+      objects.set(key, { bytes, options });
+    },
+    async get(key) {
+      const obj = objects.get(key);
+      if (!obj) return null;
+      return {
+        size: obj.bytes.byteLength,
+        httpMetadata: obj.options && obj.options.httpMetadata,
+        async arrayBuffer() {
+          return obj.bytes.buffer.slice(obj.bytes.byteOffset, obj.bytes.byteOffset + obj.bytes.byteLength);
+        },
+      };
+    },
+    async delete(key) { objects.delete(key); },
+    __objects: objects,
+  };
+}
 function mcpEnv(extra = {}) {
-  return { DB: fakeD1(), INTERNAL_TOKEN: TOKEN, ...extra };
+  return { DB: fakeD1(), FILES: fakeR2(), INTERNAL_TOKEN: TOKEN, ...extra };
 }
 function postRpc(env, body, headers = {}) {
   const h = { "X-Internal-Token": TOKEN, "X-Abot-Owner-Email": EMAIL, ...headers };
@@ -168,7 +190,10 @@ const env = mcpEnv();
   const r3 = await postRpc(env, { jsonrpc: "2.0", id: 1, method: "tools/list" });
   eq(r3.status, 200, "auth: valid token + email -> 200");
   const tools = (await r3.json()).result.tools;
-  eq(tools.length, 12, "tools/list: 12 tools");
+  eq(tools.length, 15, "tools/list: 15 tools");
+  for (const name of ["upload_lab_report_file", "get_lab_report_file", "list_lab_report_files"]) {
+    ok(tools.some((t) => t.name === name), `tools/list includes ${name}`);
+  }
   // OWNER_EMAIL allowlist
   const env2 = mcpEnv({ OWNER_EMAIL: "owner@example.com" });
   const r4 = await postRpc(env2, { jsonrpc: "2.0", id: 1, method: "tools/list" });
@@ -231,7 +256,168 @@ eq(up2.vaccinations[0].patient_name, "本人", "upcoming_vaccinations joins pati
 {
   const r = await postRpc(env, { jsonrpc: "2.0", id: 2, method: "initialize" });
   const j = await r.json();
-  eq(j.result.serverInfo.version, "1.0.1", "initialize version");
+  eq(j.result.serverInfo.version, "1.1.0", "initialize version");
+}
+
+ok(!src.includes("家庭成员"), "static: patients are not family-only");
+ok(!src.includes("单家庭"), "static: no single-family mode");
+ok(src.includes("MAX_FILE_BYTES = 10 * 1024 * 1024"), "static: 10MB file cap");
+ok(src.includes("lab_report_files"), "static: file metadata table");
+ok(src.includes("env.FILES"), "static: R2 binding FILES");
+
+// ---------- 通用病人（不限家人）----------
+{
+  const friend = await call(env, "add_patient", { name: "周同事", relationship: "同事", notes: "外院会诊" });
+  ok(friend.id.startsWith("pat_"), "add non-family patient");
+  const anon = await call(env, "add_patient", { name: "未填关系" });
+  const listed = await call(env, "list_patients", {});
+  const friendRow = listed.patients.find((x) => x.id === friend.id);
+  const anonRow = listed.patients.find((x) => x.id === anon.id);
+  eq(friendRow.relationship, "同事", "optional relationship stored");
+  eq(friendRow.notes, "外院会诊", "optional notes stored");
+  eq(anonRow.relationship, null, "relationship may be omitted");
+  eq(anonRow.notes, null, "notes may be omitted");
+  const fv = await call(env, "add_visit", { patient_id: friend.id, visit_date: "2026-10-02", diagnosis: "复诊" });
+  ok(fv.id.startsWith("visit_"), "visit for non-family patient");
+  const onlyFriend = await call(env, "list_visits", { patient_id: friend.id });
+  eq(onlyFriend.visits.length, 1, "visits stay isolated by patient_id");
+  ok(onlyFriend.visits.every((row) => row.patient_id === friend.id), "listed visits belong to that patient");
+}
+
+// ---------- 检查报告附件：上传 / 下载 / 隔离 ----------
+{
+  const png = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+    "base64",
+  );
+  const pngB64 = png.toString("base64");
+  const pdfB64 = Buffer.from("%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF").toString("base64");
+  const jpegB64 = Buffer.from([0xff, 0xd8, 0xff, 0xd9]).toString("base64");
+  const webp = Buffer.alloc(12);
+  webp.write("RIFF");
+  webp.writeUInt32LE(4, 4);
+  webp.write("WEBP", 8);
+  const webpB64 = webp.toString("base64");
+
+  const owner = await call(env, "add_patient", { name: "甲", notes: "门诊" });
+  const other = await call(env, "add_patient", { name: "乙", relationship: "朋友" });
+  const lab = await call(env, "add_lab_report", {
+    patient_id: owner.id, report_date: "2026-10-01", report_type: "血常规", summary: "正常",
+  });
+  const otherLab = await call(env, "add_lab_report", {
+    patient_id: other.id, report_date: "2026-10-01", report_type: "处方",
+  });
+
+  const missingPatient = await call(env, "upload_lab_report_file", {
+    patient_id: "nope", filename: "a.png", content_base64: pngB64,
+  });
+  eq(missingPatient.__error && missingPatient.__error.message, "patient_not_found", "upload bogus patient");
+
+  const crossLab = await call(env, "upload_lab_report_file", {
+    patient_id: other.id, lab_report_id: lab.id, filename: "a.png", content_base64: pngB64,
+  });
+  eq(crossLab.__error && crossLab.__error.message, "lab_report_not_found", "cannot attach another patient's report");
+
+  const badType = await call(env, "upload_lab_report_file", {
+    patient_id: owner.id, filename: "notes.txt", content_base64: Buffer.from("hello").toString("base64"),
+  });
+  eq(badType.__error && badType.__error.message, "unsupported_file_type", "reject non image/pdf");
+
+  const mismatch = await call(env, "upload_lab_report_file", {
+    patient_id: owner.id, filename: "photo.jpg", content_base64: pngB64,
+  });
+  eq(mismatch.__error && mismatch.__error.message, "file_type_mismatch", "reject mismatched magic bytes");
+
+  const badB64 = await call(env, "upload_lab_report_file", {
+    patient_id: owner.id, filename: "a.png", content_base64: "@@@not-base64",
+  });
+  eq(badB64.__error && badB64.__error.message, "invalid_base64", "reject invalid base64");
+
+  const tooBig = "A".repeat(Math.ceil((10 * 1024 * 1024 + 1) / 3) * 4);
+  const big = await call(env, "upload_lab_report_file", {
+    patient_id: owner.id, filename: "big.png", content_base64: tooBig,
+  });
+  eq(big.__error && big.__error.message, "file_too_large", "reject over 10MB");
+
+  const uploaded = await call(env, "upload_lab_report_file", {
+    patient_id: owner.id, lab_report_id: lab.id, filename: "../../血常规.png", content_base64: pngB64,
+  });
+  ok(uploaded.file_id && uploaded.file_id.startsWith("file_"), "upload returns file_id");
+
+  const pdf = await call(env, "upload_lab_report_file", {
+    patient_id: owner.id, filename: "处方.pdf", content_base64: pdfB64,
+  });
+  ok(pdf.file_id.startsWith("file_"), "upload pdf");
+  const jpeg = await call(env, "upload_lab_report_file", {
+    patient_id: owner.id, lab_report_id: lab.id, filename: "scan.jpeg", content_base64: jpegB64,
+  });
+  ok(jpeg.file_id.startsWith("file_"), "upload jpeg");
+  const webpUp = await call(env, "upload_lab_report_file", {
+    patient_id: other.id, lab_report_id: otherLab.id, filename: "x.webp", content_base64: webpB64,
+  });
+  ok(webpUp.file_id.startsWith("file_"), "upload webp for other patient");
+
+  const meta = env.DB.__tables.lab_report_files.find((row) => row.id === uploaded.file_id);
+  eq(meta.filename, "血常规.png", "metadata keeps basename only");
+  eq(meta.mime, "image/png", "metadata mime");
+  eq(meta.size, png.length, "metadata size");
+  eq(meta.patient_id, owner.id, "metadata patient");
+  eq(meta.lab_report_id, lab.id, "metadata linked report");
+  ok(meta.r2_key === `patients/${owner.id}/lab-files/${uploaded.file_id}`, "r2 key scoped to patient");
+  ok(env.FILES.__objects.has(meta.r2_key), "object stored in R2");
+
+  const got = await call(env, "get_lab_report_file", { patient_id: owner.id, file_id: uploaded.file_id });
+  eq(got.content_base64, pngB64, "download returns original bytes");
+  eq(got.filename, "血常规.png", "download filename");
+  eq(got.mime, "image/png", "download mime");
+  eq(got.lab_report_id, lab.id, "download keeps report link");
+
+  const stolen = await call(env, "get_lab_report_file", { patient_id: other.id, file_id: uploaded.file_id });
+  eq(stolen.__error && stolen.__error.code, -32602, "cross-patient download rejected");
+  eq(stolen.__error && stolen.__error.message, "file_not_found", "cross-patient download is file_not_found");
+  const noPid = await call(env, "get_lab_report_file", { file_id: uploaded.file_id });
+  eq(noPid.__error && noPid.__error.message, "patient_id_required", "download requires patient_id");
+  const missingFile = await call(env, "get_lab_report_file", { patient_id: owner.id, file_id: "file_missing" });
+  eq(missingFile.__error && missingFile.__error.message, "file_not_found", "unknown file_id");
+
+  const listOther = await call(env, "list_lab_report_files", { patient_id: other.id });
+  eq(listOther.files.length, 1, "other patient sees only own file");
+  eq(listOther.files[0].file_id, webpUp.file_id, "other patient's file id");
+  ok(!listOther.files.some((row) => row.file_id === uploaded.file_id), "list does not leak other patient's files");
+  ok(!("r2_key" in listOther.files[0]), "list omits r2 key");
+  ok(!("content_base64" in listOther.files[0]), "list omits file bytes");
+
+  const listOwner = await call(env, "list_lab_report_files", { patient_id: owner.id, lab_report_id: lab.id });
+  eq(listOwner.files.length, 2, "filter files by lab report");
+  ok(listOwner.files.every((row) => row.lab_report_id === lab.id && row.patient_id === owner.id), "filtered files stay on that report");
+  const listAllOwner = await call(env, "list_lab_report_files", { patient_id: owner.id });
+  eq(listAllOwner.files.length, 3, "owner has png, pdf, jpeg");
+
+  const listMissing = await call(env, "list_lab_report_files", {});
+  eq(listMissing.__error && listMissing.__error.message, "patient_id_required", "list requires patient_id");
+}
+
+// R2 已写入但 D1 失败时回滚对象，且错误不泄漏
+{
+  const envFail = mcpEnv();
+  const who = await call(envFail, "add_patient", { name: "回滚" });
+  const orig = envFail.DB.prepare.bind(envFail.DB);
+  envFail.DB.prepare = (sql) => {
+    const prepared = orig(sql);
+    if (!/INSERT INTO lab_report_files/i.test(sql)) return prepared;
+    return { bind() { return { async run() { throw new Error("d1 insert failed: secret-bucket"); } }; } };
+  };
+  const pngB64 = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+    "base64",
+  ).toString("base64");
+  const failed = await call(envFail, "upload_lab_report_file", {
+    patient_id: who.id, filename: "a.png", content_base64: pngB64,
+  });
+  eq(failed.__error && failed.__error.code, -32603, "d1 failure is internal_error");
+  eq(failed.__error && failed.__error.message, "internal_error", "d1 failure sanitized");
+  ok(!(failed.__error && failed.__error.message || "").includes("secret"), "no secret in upload failure");
+  eq(envFail.FILES.__objects.size, 0, "R2 object rolled back when metadata insert fails");
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
