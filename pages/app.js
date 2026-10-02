@@ -1,6 +1,3 @@
-const API_URL = "https://health.abot.run/mcp";
-const TOKEN_KEY = "abot-health-token";
-const EMAIL_KEY = "abot-health-owner-email";
 const SELECT_KEY = "abot-health-selected";
 
 const TABS = [
@@ -8,6 +5,10 @@ const TABS = [
   { id: "prescriptions", label: "处方" },
   { id: "labs", label: "检查报告" },
   { id: "vaccines", label: "疫苗" },
+  { id: "allergies", label: "过敏史" },
+  { id: "chronic", label: "慢性病" },
+  { id: "surgeries", label: "手术史" },
+  { id: "contacts", label: "紧急联系人" },
 ];
 
 const RX_LABEL = {
@@ -15,6 +16,18 @@ const RX_LABEL = {
   finished: "已吃完",
   stopped: "已停",
   paused: "暂停",
+};
+
+const SEVERITY_LABEL = {
+  mild: "轻度",
+  moderate: "中度",
+  severe: "严重",
+};
+
+const CHRONIC_STATUS_LABEL = {
+  active: "患病中",
+  managed: "管理中",
+  cured: "已治愈",
 };
 
 const state = {
@@ -30,8 +43,6 @@ const state = {
   dueCounts: {},
   lightboxFile: null,
 };
-
-let rpcId = 0;
 
 const $ = (id) => document.getElementById(id);
 
@@ -52,63 +63,24 @@ function el(tag, attrs, children) {
   return node;
 }
 
-function persistAuth() {
-  localStorage.setItem(TOKEN_KEY, $("token").value.trim());
-  localStorage.setItem(EMAIL_KEY, $("email").value.trim());
-}
-
-function token() { return localStorage.getItem(TOKEN_KEY) || ""; }
-function email() { return localStorage.getItem(EMAIL_KEY) || ""; }
-
-function setAuth(text, isError) {
-  const node = $("auth-status");
-  node.textContent = text;
-  node.classList.toggle("is-error", !!isError);
-}
-
 function humanError(err) {
   const msg = String((err && err.message) || err || "");
-  if (msg === "unauthorized") return "鉴权失败，请检查访问令牌和账号邮箱";
-  if (msg === "owner email required") return "请填写账号邮箱";
   if (msg === "patient_not_found") return "找不到这位病人";
-  if (msg.startsWith("unknown tool")) return "服务暂时没有这个接口";
   return msg || "请求失败";
 }
 
-async function mcp(name, args) {
-  const headers = {
-    "content-type": "application/json",
-    "X-Internal-Token": token(),
-    "X-Abot-Owner-Email": email(),
-  };
+async function api(path) {
   let res;
   try {
-    res = await fetch(API_URL, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        jsonrpc: "2.0",
-        id: ++rpcId,
-        method: "tools/call",
-        params: { name, arguments: args || {} },
-      }),
-    });
+    res = await fetch(path, { headers: { "accept": "application/json" } });
   } catch {
-    throw new Error("无法连接 health.abot.run");
+    throw new Error("无法连接服务");
   }
   let body;
   try { body = await res.json(); }
   catch { throw new Error("服务返回了无法识别的内容"); }
-  if (!res.ok) {
-    const err = body && body.error;
-    const msg = typeof err === "string" ? err : (err && err.message) || "";
-    throw new Error(msg || "请求失败");
-  }
-  if (body.error) throw new Error(body.error.message || "请求失败");
-  const text = body.result && body.result.content && body.result.content[0] && body.result.content[0].text;
-  if (typeof text !== "string") throw new Error("服务返回了空结果");
-  try { return JSON.parse(text); }
-  catch { throw new Error("服务返回了无法识别的内容"); }
+  if (!res.ok) throw new Error(body.error || "请求失败");
+  return body;
 }
 
 function parseDay(value) {
@@ -254,7 +226,6 @@ function meta(label, value) {
 }
 
 function renderVisits(detail) {
-  if (detail.errors.visits) return errorBanner(detail.errors.visits);
   if (!detail.visits.length) return el("p", { class: "hint", text: "还没有就诊记录" });
   const stack = el("div", { class: "stack" });
   for (const visit of detail.visits) {
@@ -273,7 +244,6 @@ function renderVisits(detail) {
 }
 
 function renderPrescriptions(detail) {
-  if (detail.errors.prescriptions) return errorBanner(detail.errors.prescriptions);
   if (!detail.prescriptions.length) return el("p", { class: "hint", text: "还没有处方" });
   const rank = { active: 0, paused: 1, stopped: 2, finished: 3 };
   const rows = detail.prescriptions.map((item, index) => ({ item, index }));
@@ -308,7 +278,7 @@ function renderFileBlock(patientId, file) {
     const button = el("button", {
       type: "button",
       class: "thumb",
-      "data-thumb": file.file_id,
+      "data-thumb": file.id,
       onclick: () => openLightbox(patientId, file),
     }, [
       el("span", { class: "thumb-wait", text: "加载中" }),
@@ -347,11 +317,8 @@ function renderReportCard(patientId, report, files) {
 }
 
 function renderLabs(detail) {
-  const parts = [];
-  if (detail.errors.reports) parts.push(errorBanner(detail.errors.reports));
-  if (detail.errors.files) parts.push(errorBanner(detail.errors.files));
-  if (!detail.errors.reports && !detail.reports.length && !detail.files.length) {
-    parts.push(el("p", { class: "hint", text: "还没有检查报告" }));
+  if (!detail.reports.length && !detail.files.length) {
+    return el("p", { class: "hint", text: "还没有检查报告" });
   }
   const known = new Set(detail.reports.map((report) => report.id));
   const stack = el("div", { class: "stack" });
@@ -360,12 +327,10 @@ function renderLabs(detail) {
   if (loose.length) {
     stack.append(renderReportCard(detail.patientId, { report_type: "未关联到报告的附件", report_date: "" }, loose));
   }
-  if (stack.childNodes.length) parts.push(stack);
-  return el("div", { class: "stack" }, parts);
+  return stack;
 }
 
 function renderVaccines(detail) {
-  if (detail.errors.vaccinations) return errorBanner(detail.errors.vaccinations);
   if (!detail.vaccinations.length) return el("p", { class: "hint", text: "还没有疫苗记录" });
   const due = dueVaccines(detail.vaccinations);
   const banner = due.length
@@ -397,13 +362,95 @@ function renderVaccines(detail) {
   return stack;
 }
 
+function renderAllergies(detail) {
+  if (!detail.allergies.length) return el("p", { class: "hint", text: "还没有过敏史记录" });
+  const rank = { severe: 0, moderate: 1, mild: 2 };
+  const rows = [...detail.allergies].sort((a, b) => (rank[a.severity] ?? 9) - (rank[b.severity] ?? 9));
+  const stack = el("div", { class: "stack" });
+  for (const item of rows) {
+    const severe = item.severity === "severe";
+    stack.append(el("article", {
+      class: "card",
+      style: severe ? "border-left: 3px solid #ef4444;" : undefined,
+    }, [
+      el("div", { class: "rx-head" }, [
+        el("h3", { text: item.allergen || "未命名过敏原" }),
+        el("span", {
+          class: "pill " + (severe ? "pill-stopped" : item.severity === "moderate" ? "pill-paused" : "pill-muted"),
+          text: SEVERITY_LABEL[item.severity] || item.severity || "未知",
+        }),
+      ]),
+      el("div", { class: "meta-grid" }, [
+        meta("反应症状", item.reaction),
+        meta("备注", item.notes),
+      ]),
+    ]));
+  }
+  return stack;
+}
+
+function renderChronic(detail) {
+  if (!detail.chronic_conditions.length) return el("p", { class: "hint", text: "还没有慢性病记录" });
+  const stack = el("div", { class: "stack" });
+  for (const item of detail.chronic_conditions) {
+    stack.append(el("article", { class: "card" }, [
+      el("div", { class: "rx-head" }, [
+        el("h3", { text: item.condition_name || "未命名疾病" }),
+        el("span", { class: "pill", text: CHRONIC_STATUS_LABEL[item.status] || item.status || "未知" }),
+      ]),
+      el("div", { class: "meta-grid" }, [
+        meta("确诊日期", formatDate(item.diagnosed_date)),
+        meta("备注", item.notes),
+      ]),
+    ]));
+  }
+  return stack;
+}
+
+function renderSurgeries(detail) {
+  if (!detail.surgeries.length) return el("p", { class: "hint", text: "还没有手术记录" });
+  const rows = [...detail.surgeries].sort((a, b) => String(b.surgery_date || "").localeCompare(String(a.surgery_date || "")));
+  const stack = el("div", { class: "stack" });
+  for (const item of rows) {
+    stack.append(el("article", { class: "card" }, [
+      el("h3", { text: item.surgery_name || "未命名手术" }),
+      el("div", { class: "meta-grid" }, [
+        meta("手术日期", formatDate(item.surgery_date)),
+        meta("医院", item.hospital),
+        meta("主刀医生", item.surgeon),
+        meta("备注", item.notes),
+      ]),
+    ]));
+  }
+  return stack;
+}
+
+function renderContacts(detail) {
+  if (!detail.emergency_contacts.length) return el("p", { class: "hint", text: "还没有紧急联系人" });
+  const rows = [...detail.emergency_contacts].sort((a, b) => (b.is_primary || 0) - (a.is_primary || 0));
+  const stack = el("div", { class: "stack" });
+  for (const item of rows) {
+    stack.append(el("article", { class: "card" }, [
+      el("div", { class: "rx-head" }, [
+        el("h3", { text: item.name || "未命名" }),
+        item.is_primary ? el("span", { class: "pill pill-active", text: "首选" }) : null,
+      ]),
+      el("div", { class: "meta-grid" }, [
+        meta("关系", item.relationship),
+        meta("电话", item.phone),
+      ]),
+    ]));
+  }
+  return stack;
+}
+
+function severeAllergies(detail) {
+  return (detail.allergies || []).filter((a) => a.severity === "severe");
+}
+
 function renderMain() {
   const main = $("main");
   main.replaceChildren();
-  if (!token() || !email()) {
-    main.append(emptyPanel("填写上方的访问令牌和账号邮箱，连接后即可查看病历。"));
-    return;
-  }
   if (state.loadingList && !state.patients.length) {
     main.append(emptyPanel("正在读取病人列表…"));
     return;
@@ -439,7 +486,19 @@ function renderMain() {
     main.append(panel);
     return;
   }
-  const due = state.detail.errors.vaccinations ? [] : dueVaccines(state.detail.vaccinations);
+  const severe = severeAllergies(state.detail);
+  if (severe.length) {
+    panel.append(el("div", { class: "allergy-alert" }, [
+      el("span", { text: "⚠️" }),
+      el("div", {}, [
+        el("strong", { text: "严重过敏：" }),
+        ...severe.map((a, i) => el("span", {
+          text: (i ? "、" : "") + a.allergen + (a.reaction ? `（${a.reaction}）` : ""),
+        })),
+      ]),
+    ]));
+  }
+  const due = dueVaccines(state.detail.vaccinations);
   panel.append(el("div", { class: "tabs", role: "tablist" }, TABS.map((tab) => {
     const button = el("button", {
       type: "button",
@@ -451,13 +510,18 @@ function renderMain() {
       text: tab.label,
     });
     if (tab.id === "vaccines" && due.length) button.append(el("span", { class: "badge", text: String(due.length) }));
+    if (tab.id === "allergies" && severe.length) button.append(el("span", { class: "badge badge-red", text: String(severe.length) }));
     return button;
   })));
   const body = el("div", { id: "tab-panel", role: "tabpanel", "aria-labelledby": `tab-${state.tab}` });
   if (state.tab === "visits") body.append(renderVisits(state.detail));
   else if (state.tab === "prescriptions") body.append(renderPrescriptions(state.detail));
   else if (state.tab === "labs") body.append(renderLabs(state.detail));
-  else body.append(renderVaccines(state.detail));
+  else if (state.tab === "vaccines") body.append(renderVaccines(state.detail));
+  else if (state.tab === "allergies") body.append(renderAllergies(state.detail));
+  else if (state.tab === "chronic") body.append(renderChronic(state.detail));
+  else if (state.tab === "surgeries") body.append(renderSurgeries(state.detail));
+  else body.append(renderContacts(state.detail));
   panel.append(body);
   main.append(panel);
   if (state.tab === "labs") loadThumbs(state.generation);
@@ -466,11 +530,6 @@ function renderMain() {
 function setTab(id) {
   state.tab = id;
   renderMain();
-}
-
-function unpack(result, pick, fallback) {
-  if (result.status === "fulfilled") return { data: pick(result.value) || fallback, error: "" };
-  return { data: fallback, error: humanError(result.reason) };
 }
 
 async function selectPatient(id) {
@@ -484,51 +543,17 @@ async function selectPatient(id) {
   renderChrome();
   renderPatientList();
   renderMain();
-  if (!token() || !email()) {
-    state.loadingDetail = false;
-    renderMain();
-    return;
-  }
-  const args = { patient_id: id };
-  const [patientR, visitR, rxR, labR, fileR, vaxR] = await Promise.allSettled([
-    mcp("get_patient", args),
-    mcp("list_visits", args),
-    mcp("list_prescriptions", args),
-    mcp("list_lab_reports", args),
-    mcp("list_lab_report_files", args),
-    mcp("list_vaccinations", args),
-  ]);
-  if (gen !== state.generation) return;
-  const patient = unpack(patientR, (value) => value.patient, null);
-  const visits = unpack(visitR, (value) => value.visits, []);
-  const prescriptions = unpack(rxR, (value) => value.prescriptions, []);
-  const reports = unpack(labR, (value) => value.lab_reports, []);
-  const files = unpack(fileR, (value) => value.files, []);
-  const vaccinations = unpack(vaxR, (value) => value.vaccinations, []);
-  const errors = [patient.error, visits.error, prescriptions.error, reports.error, files.error, vaccinations.error].filter(Boolean);
-  if (!vaccinations.error) state.dueCounts[id] = dueVaccines(vaccinations.data).length;
-  if (errors.length === 6) {
+  try {
+    const data = await api(`/api/patient?id=${encodeURIComponent(id)}`);
+    if (gen !== state.generation) return;
+    if (data.error) throw new Error(data.error);
+    state.dueCounts[id] = dueVaccines(data.vaccinations).length;
+    state.detail = { patientId: id, ...data };
+    state.detailError = "";
+  } catch (err) {
+    if (gen !== state.generation) return;
     state.detail = null;
-    state.detailError = errors[0];
-  } else {
-    state.detail = {
-      patientId: id,
-      patient: patient.data || currentBrief(),
-      visits: visits.data,
-      prescriptions: prescriptions.data,
-      reports: reports.data,
-      files: files.data,
-      vaccinations: vaccinations.data,
-      errors: {
-        patient: patient.error,
-        visits: visits.error,
-        prescriptions: prescriptions.error,
-        reports: reports.error,
-        files: files.error,
-        vaccinations: vaccinations.error,
-      },
-    };
-    state.detailError = patient.error || "";
+    state.detailError = humanError(err);
   }
   state.loadingDetail = false;
   renderChrome();
@@ -537,17 +562,11 @@ async function selectPatient(id) {
 }
 
 async function loadPatients() {
-  persistAuth();
-  if (!token()) { setAuth("请填写访问令牌", true); return; }
-  if (!email()) { setAuth("请填写账号邮箱", true); return; }
   state.loadingList = true;
-  setAuth("正在连接…", false);
-  $("connect").disabled = true;
   renderMain();
   try {
-    const data = await mcp("list_patients", {});
+    const data = await api("/api/patients");
     state.patients = data.patients || [];
-    setAuth(`已连接，${state.patients.length} 位病人`, false);
     const saved = sessionStorage.getItem(SELECT_KEY) || "";
     const pick = state.patients.some((patient) => patient.id === saved)
       ? saved
@@ -565,44 +584,27 @@ async function loadPatients() {
     state.patients = [];
     state.selectedId = "";
     state.detail = null;
+    state.loadingDetail = false;
     state.loadingList = false;
-    setAuth(humanError(err), true);
     renderChrome();
     renderPatientList();
-    renderMain();
-  } finally {
-    $("connect").disabled = false;
+    const main = $("main");
+    main.replaceChildren();
+    main.append(emptyPanel(humanError(err)));
   }
 }
 
-function clearAuth() {
-  localStorage.removeItem(TOKEN_KEY);
-  localStorage.removeItem(EMAIL_KEY);
-  sessionStorage.removeItem(SELECT_KEY);
-  $("token").value = "";
-  $("email").value = "";
-  state.patients = [];
-  state.selectedId = "";
-  state.detail = null;
-  state.dueCounts = {};
-  state.fileCache.clear();
-  state.generation += 1;
-  setAuth("已清除本机保存的令牌和邮箱。", false);
-  renderChrome();
-  renderPatientList();
-  renderMain();
-}
-
 async function fetchFile(patientId, file) {
-  const cached = state.fileCache.get(file.file_id);
+  const key = file.id;
+  const cached = state.fileCache.get(key);
   if (cached) return cached;
-  const data = await mcp("get_lab_report_file", { patient_id: patientId, file_id: file.file_id });
+  const data = await api(`/api/file?patient_id=${encodeURIComponent(patientId)}&file_id=${encodeURIComponent(key)}`);
   const record = {
     filename: data.filename || file.filename,
     mime: data.mime || file.mime || "application/octet-stream",
     content_base64: data.content_base64 || "",
   };
-  state.fileCache.set(file.file_id, record);
+  state.fileCache.set(key, record);
   if (state.fileCache.size > 40) {
     const oldest = state.fileCache.keys().next().value;
     state.fileCache.delete(oldest);
@@ -645,7 +647,7 @@ async function loadThumbs(gen) {
   const nodes = [...document.querySelectorAll("[data-thumb]")];
   const queue = nodes.map((node) => ({
     node,
-    file: (state.detail && state.detail.files || []).find((item) => item.file_id === node.getAttribute("data-thumb")),
+    file: (state.detail && state.detail.files || []).find((item) => item.id === node.getAttribute("data-thumb")),
   })).filter((item) => item.file);
   const workers = Array.from({ length: Math.min(3, queue.length) }, async () => {
     while (queue.length && gen === state.generation) {
@@ -674,14 +676,14 @@ async function loadThumbs(gen) {
 
 async function openLightbox(patientId, file) {
   try {
-    const cached = state.fileCache.get(file.file_id) || await fetchFile(patientId, file);
+    const cached = state.fileCache.get(file.id) || await fetchFile(patientId, file);
     state.lightboxFile = { patientId, file };
     $("lightbox-img").src = `data:${cached.mime};base64,${cached.content_base64}`;
     $("lightbox-img").alt = cached.filename || "检查图片";
     $("lightbox-name").textContent = cached.filename || "检查图片";
     $("lightbox").hidden = false;
   } catch (err) {
-    const node = document.querySelector(`[data-thumb="${CSS.escape(file.file_id)}"] .thumb-wait`);
+    const node = document.querySelector(`[data-thumb="${CSS.escape(file.id)}"] .thumb-wait`);
     if (node) node.textContent = humanError(err);
   }
 }
@@ -693,21 +695,6 @@ function closeLightbox() {
 }
 
 function init() {
-  $("token").value = token();
-  $("email").value = email();
-  $("auth-form").addEventListener("submit", (event) => {
-    event.preventDefault();
-    loadPatients();
-  });
-  $("token").addEventListener("input", persistAuth);
-  $("email").addEventListener("input", persistAuth);
-  $("reveal").addEventListener("click", () => {
-    const input = $("token");
-    const show = input.type === "password";
-    input.type = show ? "text" : "password";
-    $("reveal").textContent = show ? "隐藏" : "显示";
-  });
-  $("clear-auth").addEventListener("click", clearAuth);
   $("search").addEventListener("input", renderPatientList);
   $("menu-btn").addEventListener("click", () => {
     if ($("sidebar").classList.contains("is-open")) closeSidebar();
@@ -734,7 +721,7 @@ function init() {
   renderChrome();
   renderPatientList();
   renderMain();
-  if (token() && email()) loadPatients();
+  loadPatients();
 }
 
 init();
