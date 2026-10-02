@@ -9,6 +9,8 @@
  * - 病人可以是任何人；relationship / notes 可选，只用于区分身份
  * - 病历与附件按 patient_id 隔离；写操作校验病人存在
  * - 附件存在 R2（binding FILES），元数据在 D1；仅 jpg/png/webp/pdf，单文件 10MB
+ * - 病人头像存在 R2 avatars/{patient_id}.{ext}，仅 jpg/png/webp，单文件 2MB；
+ *   patients.avatar_r2_key 存 R2 key
  * - 所有写操作校验 patient_id 存在；处方的 visit_id 必须属于同一病人
  * - 非法 JSON / 非对象请求就地返回，不把运行时异常抛给网关
  */
@@ -45,6 +47,10 @@ class InputError extends Error {
 }
 
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
+const MAX_AVATAR_BYTES = 2 * 1024 * 1024;
+
+const ALLERGY_SEVERITIES = ["mild", "moderate", "severe"];
+const CHRONIC_STATUSES = ["active", "managed", "cured"];
 
 const FILE_TYPES = [
   { ext: "jpg", mime: "image/jpeg", check: isJpeg },
@@ -72,7 +78,7 @@ function isPdf(b) {
     && b[0] === 0x25 && b[1] === 0x50 && b[2] === 0x44 && b[3] === 0x46 && b[4] === 0x2d;
 }
 
-function decodeBase64(input) {
+function decodeBase64(input, maxBytes = MAX_FILE_BYTES) {
   if (typeof input !== "string" || !input.trim()) throw new InputError("content_required");
   let b64 = input.trim();
   const dataUrl = b64.match(/^data:[^;,]+;base64,([\s\S]*)$/i);
@@ -83,13 +89,13 @@ function decodeBase64(input) {
   }
   const pad = b64.endsWith("==") ? 2 : b64.endsWith("=") ? 1 : 0;
   const declared = (b64.length / 4) * 3 - pad;
-  if (declared > MAX_FILE_BYTES) throw new InputError("file_too_large");
+  if (declared > maxBytes) throw new InputError("file_too_large");
   if (declared === 0) throw new InputError("empty_file");
   let bin;
   try { bin = atob(b64); } catch { throw new InputError("invalid_base64"); }
   const out = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i) & 0xff;
-  if (out.length !== declared || out.length > MAX_FILE_BYTES) throw new InputError("file_too_large");
+  if (out.length !== declared || out.length > maxBytes) throw new InputError("file_too_large");
   return out;
 }
 
@@ -102,7 +108,7 @@ function bytesToBase64(bytes) {
   return btoa(s);
 }
 
-function classifyFile(filename, bytes) {
+function classifyFile(filename, bytes, types = FILE_TYPES) {
   if (typeof filename !== "string" || !filename.trim()) throw new InputError("filename_required");
   const base = filename.trim().split(/[/\\]/).pop();
   if (!base || base === "." || base === ".." || base.length > 200 || /[\u0000-\u001f]/.test(base)) {
@@ -110,10 +116,24 @@ function classifyFile(filename, bytes) {
   }
   const dot = base.lastIndexOf(".");
   const ext = dot > 0 ? base.slice(dot + 1).toLowerCase() : "";
-  const type = FILE_TYPES.find((t) => t.ext === ext);
+  const type = types.find((t) => t.ext === ext);
   if (!type) throw new InputError("unsupported_file_type");
   if (!type.check(bytes)) throw new InputError("file_type_mismatch");
   return { filename: base, mime: type.mime };
+}
+
+// 头像只接受图片（不接受 pdf）
+const AVATAR_TYPES = [
+  { ext: "jpg", mime: "image/jpeg", check: isJpeg },
+  { ext: "jpeg", mime: "image/jpeg", check: isJpeg },
+  { ext: "png", mime: "image/png", check: isPng },
+  { ext: "webp", mime: "image/webp", check: isWebp },
+];
+
+function avatarExtFor(mime) {
+  if (mime === "image/png") return "png";
+  if (mime === "image/webp") return "webp";
+  return "jpg";
 }
 
 function requireBucket(env) {
@@ -128,6 +148,7 @@ async function ensureTables(env) {
     `CREATE TABLE IF NOT EXISTS patients (
       id TEXT PRIMARY KEY, name TEXT NOT NULL, relationship TEXT,
       dob TEXT, gender TEXT, phone TEXT, email TEXT, notes TEXT,
+      avatar_r2_key TEXT,
       created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')))`,
     `CREATE TABLE IF NOT EXISTS visits (
       id TEXT PRIMARY KEY, patient_id TEXT NOT NULL, visit_date TEXT NOT NULL,
@@ -172,12 +193,13 @@ async function ensureTables(env) {
   for (const sql of stmts) {
     await env.DB.prepare(sql).run();
   }
-  // 幂等迁移：老库 patients 表补 phone/email/gender 列
+  // 幂等迁移：老库 patients 表补 phone/email/gender/avatar_r2_key 列
   const cols = await env.DB.prepare("PRAGMA table_info(patients)").all();
   const names = new Set((cols.results || []).map((c) => c.name));
   if (!names.has("phone")) await env.DB.prepare("ALTER TABLE patients ADD COLUMN phone TEXT").run();
   if (!names.has("email")) await env.DB.prepare("ALTER TABLE patients ADD COLUMN email TEXT").run();
   if (!names.has("gender")) await env.DB.prepare("ALTER TABLE patients ADD COLUMN gender TEXT").run();
+  if (!names.has("avatar_r2_key")) await env.DB.prepare("ALTER TABLE patients ADD COLUMN avatar_r2_key TEXT").run();
 }
 
 // 每个 isolate 只建一次表，避免每请求重复 D1 写入
@@ -214,6 +236,12 @@ const MCP_TOOLS = [
       notes: { type: "string" } }, required: ["patient_id"] } },
   { name: "list_patients", description: "列出所有病人",
     inputSchema: { type: "object", properties: {} } },
+  { name: "upload_patient_avatar", description: "上传/更换病人头像（jpg/png/webp，2MB 以内）。覆盖同一病人的旧头像",
+    inputSchema: { type: "object", properties: {
+      patient_id: { type: "string" },
+      filename: { type: "string", description: "原始文件名，用于判断图片类型" },
+      content_base64: { type: "string", description: "图片内容的 base64（可带 data URL 前缀）" } },
+      required: ["patient_id", "filename", "content_base64"] } },
   { name: "add_visit", description: "添加就诊记录",
     inputSchema: { type: "object", properties: {
       patient_id: { type: "string" }, visit_date: { type: "string" },
@@ -393,6 +421,29 @@ async function callTool(name, args, env) {
   if (name === "list_patients") {
     const r = await DB.prepare("SELECT * FROM patients ORDER BY created_at").all();
     return { patients: r.results };
+  }
+  if (name === "upload_patient_avatar") {
+    await requirePatient(DB, args.patient_id);
+    const bytes = decodeBase64(args.content_base64, MAX_AVATAR_BYTES);
+    const { mime } = classifyFile(args.filename, bytes, AVATAR_TYPES);
+    const bucket = requireBucket(env);
+    const r2Key = "avatars/" + args.patient_id + "." + avatarExtFor(mime);
+    const prev = await DB.prepare("SELECT avatar_r2_key FROM patients WHERE id=?").bind(args.patient_id).first();
+    const prevKey = prev && prev.avatar_r2_key;
+    await bucket.put(r2Key, bytes, { httpMetadata: { contentType: mime } });
+    try {
+      await DB.prepare("UPDATE patients SET avatar_r2_key=? WHERE id=?")
+        .bind(r2Key, args.patient_id).run();
+    } catch (err) {
+      try { await bucket.delete(r2Key); } catch { /* D1 写入失败时尽量清掉对象 */ }
+      throw err;
+    }
+    // 清理旧头像（换扩展名时），只删该病人自己的旧 key
+    if (typeof prevKey === "string" && prevKey !== r2Key
+      && prevKey.startsWith("avatars/" + args.patient_id + ".")) {
+      try { await bucket.delete(prevKey); } catch { /* 忽略 */ }
+    }
+    return { ok: true, r2_key: r2Key };
   }
   if (name === "add_visit") {
     await requirePatient(DB, args.patient_id);

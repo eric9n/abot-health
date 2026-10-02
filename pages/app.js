@@ -42,7 +42,11 @@ const state = {
   fileCache: new Map(),
   dueCounts: {},
   lightboxFile: null,
+  avatarError: "",
+  avatarUploading: false,
 };
+
+const MAX_AVATAR_BYTES = 2 * 1024 * 1024;
 
 const $ = (id) => document.getElementById(id);
 
@@ -66,6 +70,12 @@ function el(tag, attrs, children) {
 function humanError(err) {
   const msg = String((err && err.message) || err || "");
   if (msg === "patient_not_found") return "找不到这位病人";
+  if (msg === "filename_required") return "请选择图片文件";
+  if (msg === "unsupported_file_type") return "只支持 jpg/png/webp 图片";
+  if (msg === "invalid_base64") return "图片数据损坏，请重新选择";
+  if (msg === "empty_file") return "图片是空文件";
+  if (msg === "file_too_large") return "图片不能超过 2MB";
+  if (msg === "file_type_mismatch") return "文件内容不是有效的图片";
   return msg || "请求失败";
 }
 
@@ -478,9 +488,25 @@ function renderMain() {
   const brief = currentBrief() || {};
   const patient = (state.detail && state.detail.patient) || brief;
   const info = patientInfo(patient);
+  const hasAvatar = !!(patient.avatar_r2_key && patient.id);
   const panel = el("div", {}, [
     el("div", { class: "patient-head" }, [
-      el("div", { class: "avatar", "aria-hidden": "true", text: String(patient.name || "?").slice(0, 1) }),
+      el("button", {
+        type: "button",
+        class: "avatar avatar-btn",
+        title: state.avatarUploading ? "头像上传中…" : "点击更换头像",
+        "aria-label": "更换头像",
+        disabled: state.avatarUploading ? true : null,
+        onclick: () => openAvatarPicker(),
+      }, [
+        hasAvatar
+          ? el("img", {
+              class: "avatar-img",
+              src: `/api/avatar?patient_id=${encodeURIComponent(patient.id)}`,
+              alt: "",
+            })
+          : el("span", { "aria-hidden": "true", text: String(patient.name || "?").slice(0, 1) }),
+      ]),
       el("div", {}, [
         el("h2", {}, [
           patient.name || "未命名",
@@ -488,8 +514,16 @@ function renderMain() {
         ]),
         info ? el("div", { class: "info", text: info }) : null,
       ]),
+      el("input", {
+        type: "file",
+        id: "avatar-file",
+        accept: "image/jpeg,image/png,image/webp",
+        hidden: true,
+        onchange: (e) => onAvatarChosen(e.target),
+      }),
     ]),
   ]);
+  if (state.avatarError) panel.append(el("div", { class: "error-banner", text: state.avatarError }));
   if (state.detailError) panel.append(errorBanner(state.detailError));
   if (state.loadingDetail) {
     panel.append(el("p", { class: "hint", text: "正在读取病历…" }));
@@ -555,11 +589,68 @@ function setTab(id) {
   renderMain();
 }
 
+function openAvatarPicker() {
+  const input = $("avatar-file");
+  if (input) input.click();
+}
+
+async function onAvatarChosen(input) {
+  const file = input.files && input.files[0];
+  input.value = "";
+  if (!file) return;
+  const patient = (state.detail && state.detail.patient) || currentBrief() || {};
+  const patientId = patient.id;
+  if (!patientId) return;
+  state.avatarError = "";
+  if (file.size > MAX_AVATAR_BYTES) {
+    state.avatarError = "图片不能超过 2MB";
+    renderMain();
+    return;
+  }
+  if (!/^(image\/jpeg|image\/png|image\/webp)$/.test(file.type)) {
+    state.avatarError = "只支持 jpg/png/webp 图片";
+    renderMain();
+    return;
+  }
+  let dataUrl;
+  try {
+    dataUrl = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(new Error("读取文件失败"));
+      reader.readAsDataURL(file);
+    });
+  } catch (err) {
+    state.avatarError = humanError(err);
+    renderMain();
+    return;
+  }
+  state.avatarUploading = true;
+  renderMain();
+  try {
+    const res = await fetch("/api/avatar", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ patient_id: patientId, filename: file.name, content_base64: dataUrl }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.error || "上传失败");
+    state.avatarUploading = false;
+    state.avatarError = "";
+    await selectPatient(patientId);
+  } catch (err) {
+    state.avatarUploading = false;
+    state.avatarError = humanError(err);
+    renderMain();
+  }
+}
+
 async function selectPatient(id) {
   state.selectedId = id;
   sessionStorage.setItem(SELECT_KEY, id);
   state.detail = null;
   state.detailError = "";
+  state.avatarError = "";
   state.loadingDetail = true;
   const gen = ++state.generation;
   renderChrome();

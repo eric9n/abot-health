@@ -11,7 +11,7 @@ const INDEX_HTML = `<!DOCTYPE html>
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data: blob:; style-src 'self'; script-src 'self'; base-uri 'none'; form-action 'none'">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%2310b981'/%3E%3C/svg%3E">
   <title>病历查看</title>
-  <link rel="stylesheet" href="style.css?v=43b668f">
+  <link rel="stylesheet" href="style.css?v=165b0dd">
 </head>
 <body>
   <header class="header">
@@ -41,7 +41,7 @@ const INDEX_HTML = `<!DOCTYPE html>
     </div>
   </div>
   <noscript><p class="noscript">需要启用 JavaScript 才能查看病历。</p></noscript>
-  <script src="app.js?v=43b668f"></script>
+  <script src="app.js?v=165b0dd"></script>
 </body>
 </html>
 `;
@@ -192,6 +192,31 @@ button { cursor: pointer; }
   justify-content: center;
   font-size: 28px;
   flex: none;
+  overflow: hidden;
+}
+
+.avatar-btn {
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+}
+
+.avatar-btn:hover {
+  filter: brightness(0.96);
+}
+
+.avatar-btn:disabled {
+  cursor: wait;
+  filter: grayscale(0.3);
+}
+
+.avatar-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
 }
 
 .patient-head h2 { font-size: 20px; }
@@ -535,7 +560,11 @@ const state = {
   fileCache: new Map(),
   dueCounts: {},
   lightboxFile: null,
+  avatarError: "",
+  avatarUploading: false,
 };
+
+const MAX_AVATAR_BYTES = 2 * 1024 * 1024;
 
 const $ = (id) => document.getElementById(id);
 
@@ -559,6 +588,12 @@ function el(tag, attrs, children) {
 function humanError(err) {
   const msg = String((err && err.message) || err || "");
   if (msg === "patient_not_found") return "找不到这位病人";
+  if (msg === "filename_required") return "请选择图片文件";
+  if (msg === "unsupported_file_type") return "只支持 jpg/png/webp 图片";
+  if (msg === "invalid_base64") return "图片数据损坏，请重新选择";
+  if (msg === "empty_file") return "图片是空文件";
+  if (msg === "file_too_large") return "图片不能超过 2MB";
+  if (msg === "file_type_mismatch") return "文件内容不是有效的图片";
   return msg || "请求失败";
 }
 
@@ -971,9 +1006,25 @@ function renderMain() {
   const brief = currentBrief() || {};
   const patient = (state.detail && state.detail.patient) || brief;
   const info = patientInfo(patient);
+  const hasAvatar = !!(patient.avatar_r2_key && patient.id);
   const panel = el("div", {}, [
     el("div", { class: "patient-head" }, [
-      el("div", { class: "avatar", "aria-hidden": "true", text: String(patient.name || "?").slice(0, 1) }),
+      el("button", {
+        type: "button",
+        class: "avatar avatar-btn",
+        title: state.avatarUploading ? "头像上传中…" : "点击更换头像",
+        "aria-label": "更换头像",
+        disabled: state.avatarUploading ? true : null,
+        onclick: () => openAvatarPicker(),
+      }, [
+        hasAvatar
+          ? el("img", {
+              class: "avatar-img",
+              src: \`/api/avatar?patient_id=\${encodeURIComponent(patient.id)}\`,
+              alt: "",
+            })
+          : el("span", { "aria-hidden": "true", text: String(patient.name || "?").slice(0, 1) }),
+      ]),
       el("div", {}, [
         el("h2", {}, [
           patient.name || "未命名",
@@ -981,8 +1032,16 @@ function renderMain() {
         ]),
         info ? el("div", { class: "info", text: info }) : null,
       ]),
+      el("input", {
+        type: "file",
+        id: "avatar-file",
+        accept: "image/jpeg,image/png,image/webp",
+        hidden: true,
+        onchange: (e) => onAvatarChosen(e.target),
+      }),
     ]),
   ]);
+  if (state.avatarError) panel.append(el("div", { class: "error-banner", text: state.avatarError }));
   if (state.detailError) panel.append(errorBanner(state.detailError));
   if (state.loadingDetail) {
     panel.append(el("p", { class: "hint", text: "正在读取病历…" }));
@@ -1048,11 +1107,68 @@ function setTab(id) {
   renderMain();
 }
 
+function openAvatarPicker() {
+  const input = $("avatar-file");
+  if (input) input.click();
+}
+
+async function onAvatarChosen(input) {
+  const file = input.files && input.files[0];
+  input.value = "";
+  if (!file) return;
+  const patient = (state.detail && state.detail.patient) || currentBrief() || {};
+  const patientId = patient.id;
+  if (!patientId) return;
+  state.avatarError = "";
+  if (file.size > MAX_AVATAR_BYTES) {
+    state.avatarError = "图片不能超过 2MB";
+    renderMain();
+    return;
+  }
+  if (!/^(image\\/jpeg|image\\/png|image\\/webp)$/.test(file.type)) {
+    state.avatarError = "只支持 jpg/png/webp 图片";
+    renderMain();
+    return;
+  }
+  let dataUrl;
+  try {
+    dataUrl = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(new Error("读取文件失败"));
+      reader.readAsDataURL(file);
+    });
+  } catch (err) {
+    state.avatarError = humanError(err);
+    renderMain();
+    return;
+  }
+  state.avatarUploading = true;
+  renderMain();
+  try {
+    const res = await fetch("/api/avatar", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ patient_id: patientId, filename: file.name, content_base64: dataUrl }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.error || "上传失败");
+    state.avatarUploading = false;
+    state.avatarError = "";
+    await selectPatient(patientId);
+  } catch (err) {
+    state.avatarUploading = false;
+    state.avatarError = humanError(err);
+    renderMain();
+  }
+}
+
 async function selectPatient(id) {
   state.selectedId = id;
   sessionStorage.setItem(SELECT_KEY, id);
   state.detail = null;
   state.detailError = "";
+  state.avatarError = "";
   state.loadingDetail = true;
   const gen = ++state.generation;
   renderChrome();
@@ -1240,17 +1356,37 @@ function badRequest(msg) {
   return json({ error: msg }, 400);
 }
 
+// 头像列的幂等迁移：保证 /api/* 在主 Worker 部署前也能读到 avatar_r2_key
+let avatarColReady = null;
+function ensureAvatarColumn(env) {
+  if (!avatarColReady) {
+    avatarColReady = (async () => {
+      const cols = await env.DB.prepare("PRAGMA table_info(patients)").all();
+      const names = new Set((cols.results || []).map((c) => c.name));
+      if (!names.has("avatar_r2_key")) {
+        await env.DB.prepare("ALTER TABLE patients ADD COLUMN avatar_r2_key TEXT").run();
+      }
+    })().catch((err) => {
+      avatarColReady = null;
+      throw err;
+    });
+  }
+  return avatarColReady;
+}
+
 async function getPatients(env) {
+  await ensureAvatarColumn(env);
   const r = await env.DB.prepare(
-    "SELECT id, name, relationship, dob, gender, phone, email, notes, created_at FROM patients ORDER BY created_at DESC"
+    "SELECT id, name, relationship, dob, gender, phone, email, notes, avatar_r2_key, created_at FROM patients ORDER BY created_at DESC"
   ).all();
   return { patients: r.results || [] };
 }
 
 async function getPatient(env, id) {
   if (!id) return null;
+  await ensureAvatarColumn(env);
   const patient = await env.DB.prepare(
-    "SELECT id, name, relationship, dob, gender, phone, email, notes, created_at FROM patients WHERE id=?"
+    "SELECT id, name, relationship, dob, gender, phone, email, notes, avatar_r2_key, created_at FROM patients WHERE id=?"
   ).bind(id).first();
   if (!patient) return null;
   const q = (sql) => env.DB.prepare(sql).bind(id).all().then((r) => r.results || []);
@@ -1276,6 +1412,85 @@ function bytesToBase64(bytes) {
     s += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
   }
   return btoa(s);
+}
+
+// ---------- 头像 ----------
+// 头像走同 bucket 的 avatars/ 前缀；读取时只接受本病人的合法 key，防越权
+const MAX_AVATAR_BYTES = 2 * 1024 * 1024; // 2MB
+
+function avatarMimeOf(bytes) {
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "image/jpeg";
+  if (
+    bytes.length >= 8 &&
+    bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47 &&
+    bytes[4] === 0x0d && bytes[5] === 0x0a && bytes[6] === 0x1a && bytes[7] === 0x0a
+  ) return "image/png";
+  if (
+    bytes.length >= 12 &&
+    bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 &&
+    bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50
+  ) return "image/webp";
+  return null;
+}
+
+function avatarExtFor(mime) {
+  return mime === "image/png" ? "png" : mime === "image/webp" ? "webp" : "jpg";
+}
+
+function decodeAvatarBase64(input) {
+  if (typeof input !== "string" || !input.length) throw new Error("invalid_base64");
+  const clean = input.includes(",") ? input.split(",").pop() : input;
+  let binary;
+  try {
+    binary = atob(clean.replace(/\s+/g, ""));
+  } catch {
+    throw new Error("invalid_base64");
+  }
+  if (!binary.length) throw new Error("empty_file");
+  if (binary.length > MAX_AVATAR_BYTES) throw new Error("file_too_large");
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+async function getAvatar(env, patientId) {
+  if (!patientId) return null;
+  await ensureAvatarColumn(env);
+  const row = await env.DB.prepare("SELECT avatar_r2_key FROM patients WHERE id=?").bind(patientId).first();
+  const key = row && row.avatar_r2_key;
+  if (typeof key !== "string" || !key) return null;
+  // 严格校验 key 格式，防止 D1 里的异常值导致越权读取
+  const m = /^avatars\/([A-Za-z0-9_-]+)\.(jpg|jpeg|png|webp)$/.exec(key);
+  if (!m || m[1] !== patientId) return null;
+  return env.FILES.get(key);
+}
+
+async function saveAvatar(env, patientId, filename, contentBase64) {
+  await ensureAvatarColumn(env);
+  const exists = await env.DB.prepare("SELECT avatar_r2_key FROM patients WHERE id=?").bind(patientId).first();
+  if (!exists) throw new Error("patient_not_found");
+  if (typeof filename !== "string" || !filename.trim()) throw new Error("filename_required");
+  const base = filename.trim().split(/[/\\]/).pop();
+  const dot = base.lastIndexOf(".");
+  const ext = dot > 0 ? base.slice(dot + 1).toLowerCase() : "";
+  if (!["jpg", "jpeg", "png", "webp"].includes(ext)) throw new Error("unsupported_file_type");
+  const bytes = decodeAvatarBase64(contentBase64);
+  const mime = avatarMimeOf(bytes);
+  if (!mime) throw new Error("file_type_mismatch");
+  const key = "avatars/" + patientId + "." + avatarExtFor(mime);
+  const prevKey = exists.avatar_r2_key;
+  await env.FILES.put(key, bytes, { httpMetadata: { contentType: mime } });
+  try {
+    await env.DB.prepare("UPDATE patients SET avatar_r2_key=? WHERE id=?").bind(key, patientId).run();
+  } catch (err) {
+    try { await env.FILES.delete(key); } catch { /* 忽略清理失败 */ }
+    throw err;
+  }
+  // 清理旧头像（换扩展名时），只删该病人自己的旧 key
+  if (typeof prevKey === "string" && prevKey !== key && prevKey.startsWith("avatars/" + patientId + ".")) {
+    try { await env.FILES.delete(prevKey); } catch { /* 忽略 */ }
+  }
+  return { ok: true };
 }
 
 async function getFile(env, patientId, fileId) {
@@ -1332,6 +1547,47 @@ export default {
         if (!data) return json({ error: "file_not_found" }, 404);
         return json(data);
       } catch (e) {
+        return json({ error: "internal error" }, 500);
+      }
+    }
+
+    if (path === "/api/avatar" && request.method === "GET") {
+      const patientId = url.searchParams.get("patient_id");
+      if (!patientId) return badRequest("patient_id required");
+      try {
+        const obj = await getAvatar(env, patientId);
+        if (!obj) return json({ error: "avatar_not_found" }, 404);
+        const buf = await obj.arrayBuffer();
+        const mime = (obj.httpMetadata && obj.httpMetadata.contentType) || "image/jpeg";
+        return new Response(buf, {
+          headers: {
+            "content-type": mime,
+            "cache-control": "private, max-age=3600",
+          },
+        });
+      } catch (e) {
+        return json({ error: "internal error" }, 500);
+      }
+    }
+    if (path === "/api/avatar" && request.method === "POST") {
+      let body;
+      try {
+        body = await request.json();
+      } catch {
+        return badRequest("invalid_json");
+      }
+      if (!body || typeof body !== "object") return badRequest("invalid_request");
+      try {
+        const result = await saveAvatar(env, body.patient_id, body.filename, body.content_base64);
+        return json(result);
+      } catch (e) {
+        const msg = e && e.message ? e.message : "internal error";
+        // 客户端错误直接返回 code；服务端错误脱敏
+        const clientErrors = new Set([
+          "patient_not_found", "filename_required", "unsupported_file_type",
+          "invalid_base64", "empty_file", "file_too_large", "file_type_mismatch",
+        ]);
+        if (clientErrors.has(msg)) return json({ error: msg }, 400);
         return json({ error: "internal error" }, 500);
       }
     }

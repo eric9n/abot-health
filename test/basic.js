@@ -208,7 +208,7 @@ const env = mcpEnv();
   const r3 = await postRpc(env, { jsonrpc: "2.0", id: 1, method: "tools/list" });
   eq(r3.status, 200, "auth: valid token + email -> 200");
   const tools = (await r3.json()).result.tools;
-  eq(tools.length, 15, "tools/list: 15 tools");
+  eq(tools.length, 30, "tools/list: 30 tools");
   for (const name of ["upload_lab_report_file", "get_lab_report_file", "list_lab_report_files"]) {
     ok(tools.some((t) => t.name === name), `tools/list includes ${name}`);
   }
@@ -443,6 +443,65 @@ ok(src.includes("env.FILES"), "static: R2 binding FILES");
 
   const listMissing = await call(env, "list_lab_report_files", {});
   eq(listMissing.__error && listMissing.__error.message, "patient_id_required", "list requires patient_id");
+}
+
+// ---------- 病人头像：上传 / 校验 / 覆盖 ----------
+{
+  const png = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+    "base64",
+  );
+  const pngB64 = png.toString("base64");
+  const pdfB64 = Buffer.from("%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF").toString("base64");
+  const jpegB64 = Buffer.from([0xff, 0xd8, 0xff, 0xd9]).toString("base64");
+
+  const p1 = await call(env, "add_patient", { name: "头像甲" });
+  const p2 = await call(env, "add_patient", { name: "头像乙" });
+
+  const noPatient = await call(env, "upload_patient_avatar", {
+    patient_id: "nope", filename: "a.png", content_base64: pngB64,
+  });
+  eq(noPatient.__error && noPatient.__error.message, "patient_not_found", "avatar requires patient");
+
+  const badType = await call(env, "upload_patient_avatar", {
+    patient_id: p1.id, filename: "doc.pdf", content_base64: pdfB64,
+  });
+  eq(badType.__error && badType.__error.message, "unsupported_file_type", "avatar rejects pdf");
+
+  const mismatch = await call(env, "upload_patient_avatar", {
+    patient_id: p1.id, filename: "fake.png", content_base64: jpegB64,
+  });
+  eq(mismatch.__error && mismatch.__error.message, "file_type_mismatch", "avatar rejects content mismatch");
+
+  const tooBig = "A".repeat(Math.ceil((2 * 1024 * 1024 + 1) / 3) * 4);
+  const big = await call(env, "upload_patient_avatar", {
+    patient_id: p1.id, filename: "big.png", content_base64: tooBig,
+  });
+  eq(big.__error && big.__error.message, "file_too_large", "avatar rejects over 2MB");
+
+  const up1 = await call(env, "upload_patient_avatar", {
+    patient_id: p1.id, filename: "头像.png", content_base64: pngB64,
+  });
+  ok(up1.ok === true, "avatar upload ok");
+  eq(up1.r2_key, `avatars/${p1.id}.png`, "avatar r2 key path");
+  ok(env.FILES.__objects.has(`avatars/${p1.id}.png`), "avatar stored in R2");
+
+  const listed = await call(env, "list_patients", {});
+  const row1 = listed.patients.find((r) => r.id === p1.id);
+  eq(row1.avatar_r2_key, `avatars/${p1.id}.png`, "list_patients exposes avatar_r2_key");
+  const row2 = listed.patients.find((r) => r.id === p2.id);
+  ok(!row2.avatar_r2_key, "patient without avatar has empty avatar_r2_key");
+
+  // 更换头像（不同扩展名）：旧文件被清理
+  const up2 = await call(env, "upload_patient_avatar", {
+    patient_id: p1.id, filename: "new.jpg", content_base64: jpegB64,
+  });
+  ok(up2.ok === true, "avatar replace ok");
+  eq(up2.r2_key, `avatars/${p1.id}.jpg`, "avatar key follows new ext");
+  ok(!env.FILES.__objects.has(`avatars/${p1.id}.png`), "old avatar object cleaned");
+  ok(env.FILES.__objects.has(`avatars/${p1.id}.jpg`), "new avatar object stored");
+  const listed2 = await call(env, "list_patients", {});
+  eq(listed2.patients.find((r) => r.id === p1.id).avatar_r2_key, `avatars/${p1.id}.jpg`, "avatar_r2_key updated");
 }
 
 // R2 已写入但 D1 失败时回滚对象，且错误不泄漏
