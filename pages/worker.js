@@ -663,6 +663,7 @@ function patientMeta(patient) {
 
 function patientInfo(patient) {
   const bits = [];
+  if (patient.gender) bits.push(patient.gender);
   const dob = formatDate(patient.dob);
   const age = ageFromDob(patient.dob);
   if (dob && age) bits.push(\`\${dob}（\${age}）\`);
@@ -1241,7 +1242,7 @@ function badRequest(msg) {
 
 async function getPatients(env) {
   const r = await env.DB.prepare(
-    "SELECT id, name, relationship, dob, phone, email, notes, created_at FROM patients ORDER BY created_at DESC"
+    "SELECT id, name, relationship, dob, gender, phone, email, notes, created_at FROM patients ORDER BY created_at DESC"
   ).all();
   return { patients: r.results || [] };
 }
@@ -1249,7 +1250,7 @@ async function getPatients(env) {
 async function getPatient(env, id) {
   if (!id) return null;
   const patient = await env.DB.prepare(
-    "SELECT id, name, relationship, dob, phone, email, notes, created_at FROM patients WHERE id=?"
+    "SELECT id, name, relationship, dob, gender, phone, email, notes, created_at FROM patients WHERE id=?"
   ).bind(id).first();
   if (!patient) return null;
   const q = (sql) => env.DB.prepare(sql).bind(id).all().then((r) => r.results || []);

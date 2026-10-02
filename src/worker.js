@@ -127,7 +127,7 @@ async function ensureTables(env) {
   const stmts = [
     `CREATE TABLE IF NOT EXISTS patients (
       id TEXT PRIMARY KEY, name TEXT NOT NULL, relationship TEXT,
-      dob TEXT, phone TEXT, email TEXT, notes TEXT,
+      dob TEXT, gender TEXT, phone TEXT, email TEXT, notes TEXT,
       created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')))`,
     `CREATE TABLE IF NOT EXISTS visits (
       id TEXT PRIMARY KEY, patient_id TEXT NOT NULL, visit_date TEXT NOT NULL,
@@ -172,11 +172,12 @@ async function ensureTables(env) {
   for (const sql of stmts) {
     await env.DB.prepare(sql).run();
   }
-  // 幂等迁移：老库 patients 表补 phone/email 列
+  // 幂等迁移：老库 patients 表补 phone/email/gender 列
   const cols = await env.DB.prepare("PRAGMA table_info(patients)").all();
   const names = new Set((cols.results || []).map((c) => c.name));
   if (!names.has("phone")) await env.DB.prepare("ALTER TABLE patients ADD COLUMN phone TEXT").run();
   if (!names.has("email")) await env.DB.prepare("ALTER TABLE patients ADD COLUMN email TEXT").run();
+  if (!names.has("gender")) await env.DB.prepare("ALTER TABLE patients ADD COLUMN gender TEXT").run();
 }
 
 // 每个 isolate 只建一次表，避免每请求重复 D1 写入
@@ -192,20 +193,22 @@ function ensureTablesCached(env) {
 }
 
 const MCP_TOOLS = [
-  { name: "add_patient", description: "添加病人（任意人）。relationship、phone、email 与 notes 可选，用于区分身份",
+  { name: "add_patient", description: "添加病人（任意人）。relationship、gender、phone、email 与 notes 可选，用于区分身份",
     inputSchema: { type: "object", properties: {
       name: { type: "string" },
       relationship: { type: "string", description: "可选。身份或与记录者的关系，如本人、亲属、朋友、同事" },
       dob: { type: "string" },
+      gender: { type: "string", description: "可选。性别，如男、女" },
       phone: { type: "string", description: "可选。联系电话" },
       email: { type: "string", description: "可选。联系邮箱" },
       notes: { type: "string", description: "可选备注，用于区分病人" } }, required: ["name"] } },
-  { name: "update_patient", description: "更新病人信息（relationship、dob、phone、email、notes 可选更新）",
+  { name: "update_patient", description: "更新病人信息（relationship、dob、gender、phone、email、notes 可选更新）",
     inputSchema: { type: "object", properties: {
       patient_id: { type: "string" },
       name: { type: "string" },
       relationship: { type: "string" },
       dob: { type: "string" },
+      gender: { type: "string" },
       phone: { type: "string" },
       email: { type: "string" },
       notes: { type: "string" } }, required: ["patient_id"] } },
@@ -365,8 +368,8 @@ async function callTool(name, args, env) {
   if (name === "add_patient") {
     if (!args.name || !String(args.name).trim()) throw new InputError("name_required");
     const id = newId("pat");
-    await DB.prepare("INSERT INTO patients (id,name,relationship,dob,phone,email,notes) VALUES (?,?,?,?,?,?,?)")
-      .bind(id, String(args.name).trim(), args.relationship || null, args.dob || null,
+    await DB.prepare("INSERT INTO patients (id,name,relationship,dob,gender,phone,email,notes) VALUES (?,?,?,?,?,?,?,?)")
+      .bind(id, String(args.name).trim(), args.relationship || null, args.dob || null, args.gender || null,
         args.phone || null, args.email || null, args.notes || null).run();
     return { id };
   }
@@ -374,7 +377,7 @@ async function callTool(name, args, env) {
     await requirePatient(DB, args.patient_id);
     const fields = [];
     const params = [];
-    for (const key of ["name", "relationship", "dob", "phone", "email", "notes"]) {
+    for (const key of ["name", "relationship", "dob", "gender", "phone", "email", "notes"]) {
       if (args[key] !== undefined) {
         const v = key === "name" ? String(args[key]).trim() : (args[key] || null);
         if (key === "name" && !v) throw new InputError("name_required");

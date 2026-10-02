@@ -170,6 +170,7 @@ function patientMeta(patient) {
 
 function patientInfo(patient) {
   const bits = [];
+  if (patient.gender) bits.push(patient.gender);
   const dob = formatDate(patient.dob);
   const age = ageFromDob(patient.dob);
   if (dob && age) bits.push(`${dob}（${age}）`);
