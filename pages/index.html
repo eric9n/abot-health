@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src https://health.abot.run; img-src 'self' data: blob:; style-src 'self'; script-src 'self'; base-uri 'none'; form-action 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data: blob:; style-src 'self'; script-src 'self'; base-uri 'none'; form-action 'none'">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%231f6b4a'/%3E%3C/svg%3E">
   <title>病历查看</title>
   <link rel="stylesheet" href="style.css">
@@ -19,22 +19,7 @@
           <h1>病历查看</h1>
         </div>
       </div>
-      <form id="auth-form" class="auth" autocomplete="off">
-        <label>访问令牌
-          <span class="token-row">
-            <input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="内部访问令牌" title="请求头 X-Internal-Token">
-            <button type="button" id="reveal" class="ghost">显示</button>
-          </span>
-        </label>
-        <label>账号邮箱
-          <input id="email" type="email" autocomplete="email" placeholder="账号邮箱" title="请求头 X-Abot-Owner-Email">
-        </label>
-        <div class="auth-actions">
-          <button type="submit" id="connect">连接</button>
-          <button type="button" id="clear-auth" class="ghost">清除</button>
-        </div>
-        <p id="auth-status" class="auth-status" role="status">令牌和邮箱只保存在这台浏览器。</p>
-      </form>
+      
     </header>
 
     <div class="layout">
