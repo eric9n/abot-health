@@ -1,11 +1,36 @@
 /**
  * abot-health v1 — 个人健康数据服务
- * 病历/处方/体检/疫苗，MCP 给 agent 用
+ * 病历/处方/体检/疫苗，MCP 给 agent 用（经网关聚合）
+ *
+ * 安全约定：
+ * - /mcp 只接受网关的 X-Internal-Token
+ * - 必须携带 X-Abot-Owner-Email（网关从 OAuth token 注入）；
+ *   若配置了 OWNER_EMAIL，则必须与之匹配（单家庭模式）
+ * - 所有写操作校验 patient_id 存在
  */
 
 function newId(prefix) {
-  const r = Math.random().toString(36).slice(2, 10);
+  const bytes = new Uint8Array(8);
+  crypto.getRandomValues(bytes);
+  const r = Array.from(bytes, (b) => b.toString(36).padStart(2, "0")).join("");
   return `${prefix}_${Date.now().toString(36)}${r}`;
+}
+
+// 恒定时间比较，防时序攻击
+function safeEqual(a, b) {
+  if (typeof a !== "string" || typeof b !== "string") return false;
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+// 客户端参数错误 → JSON-RPC -32602，message 可安全返回
+class InputError extends Error {
+  constructor(message) {
+    super(message);
+    this.code = -32602;
+  }
 }
 
 async function ensureTables(env) {
@@ -36,6 +61,13 @@ async function ensureTables(env) {
   for (const sql of stmts) {
     await env.DB.prepare(sql).run();
   }
+}
+
+// 每个 isolate 只建一次表，避免每请求 5 次 D1 写入
+let tablesReady = null;
+function ensureTablesCached(env) {
+  if (!tablesReady) tablesReady = ensureTables(env);
+  return tablesReady;
 }
 
 const MCP_TOOLS = [
@@ -84,11 +116,19 @@ const MCP_TOOLS = [
     inputSchema: { type: "object", properties: { patient_id: { type: "string" } } } },
 ];
 
+// 写操作前校验病人存在，防止孤儿记录
+async function requirePatient(DB, patient_id) {
+  if (!patient_id) throw new InputError("patient_id_required");
+  const row = await DB.prepare("SELECT 1 AS ok FROM patients WHERE id=?").bind(patient_id).first();
+  if (!row) throw new InputError("patient_not_found");
+}
+
 async function callTool(name, args, env) {
-  await ensureTables(env);
+  await ensureTablesCached(env);
   const DB = env.DB;
 
   if (name === "add_patient") {
+    if (!args.name) throw new InputError("name_required");
     const id = newId("pat");
     await DB.prepare("INSERT INTO patients (id,name,relationship,dob,notes) VALUES (?,?,?,?,?)")
       .bind(id, args.name, args.relationship || null, args.dob || null, args.notes || null).run();
@@ -99,6 +139,8 @@ async function callTool(name, args, env) {
     return { patients: r.results };
   }
   if (name === "add_visit") {
+    await requirePatient(DB, args.patient_id);
+    if (!args.visit_date) throw new InputError("visit_date_required");
     const id = newId("visit");
     await DB.prepare(`INSERT INTO visits (id,patient_id,visit_date,hospital,department,complaint,diagnosis,advice)
       VALUES (?,?,?,?,?,?,?,?)`).bind(id, args.patient_id, args.visit_date,
@@ -114,6 +156,8 @@ async function callTool(name, args, env) {
     return { visits: r.results };
   }
   if (name === "add_prescription") {
+    await requirePatient(DB, args.patient_id);
+    if (!args.drug_name) throw new InputError("drug_name_required");
     const id = newId("rx");
     await DB.prepare(`INSERT INTO prescriptions (id,patient_id,visit_id,drug_name,spec,usage,start_date)
       VALUES (?,?,?,?,?,?,?)`).bind(id, args.patient_id, args.visit_id || null,
@@ -129,15 +173,20 @@ async function callTool(name, args, env) {
     return { prescriptions: r.results };
   }
   if (name === "update_prescription") {
+    if (!args.id) throw new InputError("id_required");
     const sets = [], params = [];
     if (args.status !== undefined) { sets.push("status=?"); params.push(args.status); }
     if (args.end_date !== undefined) { sets.push("end_date=?"); params.push(args.end_date); }
-    if (!sets.length) return { ok: false, error: "nothing to update" };
+    if (!sets.length) throw new InputError("nothing_to_update");
     params.push(args.id);
-    await DB.prepare(`UPDATE prescriptions SET ${sets.join(",")} WHERE id=?`).bind(...params).run();
+    const res = await DB.prepare(`UPDATE prescriptions SET ${sets.join(",")} WHERE id=?`).bind(...params).run();
+    const changes = res && res.meta ? res.meta.changes : 0;
+    if (!changes) throw new InputError("prescription_not_found");
     return { ok: true };
   }
   if (name === "add_lab_report") {
+    await requirePatient(DB, args.patient_id);
+    if (!args.report_date) throw new InputError("report_date_required");
     const id = newId("lab");
     await DB.prepare(`INSERT INTO lab_reports (id,patient_id,report_date,report_type,summary,file_url)
       VALUES (?,?,?,?,?,?)`).bind(id, args.patient_id, args.report_date,
@@ -152,15 +201,17 @@ async function callTool(name, args, env) {
     return { lab_reports: r.results };
   }
   if (name === "add_vaccination") {
+    await requirePatient(DB, args.patient_id);
+    if (!args.vaccine_name) throw new InputError("vaccine_name_required");
     const id = newId("vax");
     await DB.prepare(`INSERT INTO vaccinations (id,patient_id,vaccine_name,dose_number,total_doses,vaccinated_at,next_due_at)
       VALUES (?,?,?,?,?,?,?)`).bind(id, args.patient_id, args.vaccine_name,
-      args.dose_number || null, args.total_doses || null,
+      args.dose_number ?? null, args.total_doses ?? null,
       args.vaccinated_at || null, args.next_due_at || null).run();
     return { id };
   }
   if (name === "upcoming_vaccinations") {
-    const days = args.days || 30;
+    const days = Number.isInteger(args.days) && args.days > 0 ? args.days : 30;
     const r = await DB.prepare(`SELECT v.*, p.name as patient_name FROM vaccinations v
       JOIN patients p ON v.patient_id = p.id
       WHERE v.next_due_at IS NOT NULL
@@ -170,6 +221,7 @@ async function callTool(name, args, env) {
   }
   if (name === "health_summary") {
     const pid = args.patient_id;
+    if (pid) await requirePatient(DB, pid);
     const rx = await DB.prepare(
       `SELECT drug_name, spec, usage FROM prescriptions WHERE status='active'`
       + (pid ? " AND patient_id=?" : "")).bind(...(pid ? [pid] : [])).all();
@@ -192,13 +244,21 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     if (url.pathname === "/health") {
-      await ensureTables(env);
+      await ensureTablesCached(env);
       return Response.json({ ok: true, service: "abot-health" });
     }
-    // 内部鉴权：只接受网关的 X-Internal-Token
+    // 内部鉴权：只接受网关的 X-Internal-Token，且必须携带网关注入的 owner 邮箱
     if (url.pathname === "/mcp") {
       const it = request.headers.get("X-Internal-Token") || "";
-      if (!env.INTERNAL_TOKEN || it !== env.INTERNAL_TOKEN) {
+      if (!env.INTERNAL_TOKEN || !safeEqual(it, env.INTERNAL_TOKEN)) {
+        return Response.json({ error: "unauthorized" }, { status: 401 });
+      }
+      const ownerEmail = request.headers.get("X-Abot-Owner-Email") || "";
+      if (!ownerEmail) {
+        return Response.json({ error: "owner email required" }, { status: 401 });
+      }
+      // 单家庭模式：若配置了 OWNER_EMAIL，必须匹配，防止直连绕过网关身份
+      if (env.OWNER_EMAIL && ownerEmail !== env.OWNER_EMAIL) {
         return Response.json({ error: "unauthorized" }, { status: 401 });
       }
     }
@@ -209,7 +269,7 @@ export default {
         if (msg.method === "initialize") {
           return Response.json({ jsonrpc: "2.0", id, result: {
             protocolVersion: "2025-06-18", capabilities: { tools: {} },
-            serverInfo: { name: "abot-health-mcp", version: "1.0.0" } } });
+            serverInfo: { name: "abot-health-mcp", version: "1.0.1" } } });
         }
         if (msg.method === "tools/list") {
           return Response.json({ jsonrpc: "2.0", id, result: { tools: MCP_TOOLS } });
@@ -231,8 +291,14 @@ export default {
         return Response.json({ jsonrpc: "2.0", id,
           error: { code: -32601, message: "Method not found" } });
       } catch (e) {
+        // 客户端参数错误可安全返回；其余一律 internal_error，不泄漏实现细节
+        if (e instanceof InputError) {
+          return Response.json({ jsonrpc: "2.0", id,
+            error: { code: -32602, message: e.message } });
+        }
+        console.error("health mcp error:", e && e.stack ? e.stack : e);
         return Response.json({ jsonrpc: "2.0", id,
-          error: { code: -32603, message: e.message } });
+          error: { code: -32603, message: "internal_error" } });
       }
     }
     return Response.json({ error: "not found" }, { status: 404 });
