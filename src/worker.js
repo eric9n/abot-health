@@ -13,6 +13,13 @@
  * - 非法 JSON / 非对象请求就地返回，不把运行时异常抛给网关
  */
 
+const PATIENT_SCOPED_TABLES = {
+  allergies: "allergy_not_found",
+  chronic_conditions: "chronic_condition_not_found",
+  surgeries: "surgery_not_found",
+  emergency_contacts: "emergency_contact_not_found",
+};
+
 function newId(prefix) {
   const bytes = new Uint8Array(8);
   crypto.getRandomValues(bytes);
@@ -145,6 +152,22 @@ async function ensureTables(env) {
       dose_number INTEGER, total_doses INTEGER,
       vaccinated_at TEXT, next_due_at TEXT,
       created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')))`,
+    `CREATE TABLE IF NOT EXISTS allergies (
+      id TEXT PRIMARY KEY, patient_id TEXT NOT NULL, allergen TEXT NOT NULL,
+      reaction TEXT, severity TEXT, notes TEXT,
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')))`,
+    `CREATE TABLE IF NOT EXISTS chronic_conditions (
+      id TEXT PRIMARY KEY, patient_id TEXT NOT NULL, condition_name TEXT NOT NULL,
+      diagnosed_date TEXT, status TEXT DEFAULT 'active', notes TEXT,
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')))`,
+    `CREATE TABLE IF NOT EXISTS surgeries (
+      id TEXT PRIMARY KEY, patient_id TEXT NOT NULL, surgery_name TEXT NOT NULL,
+      surgery_date TEXT, hospital TEXT, surgeon TEXT, notes TEXT,
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')))`,
+    `CREATE TABLE IF NOT EXISTS emergency_contacts (
+      id TEXT PRIMARY KEY, patient_id TEXT NOT NULL, name TEXT NOT NULL,
+      relationship TEXT, phone TEXT, is_primary INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')))`,
   ];
   for (const sql of stmts) {
     await env.DB.prepare(sql).run();
@@ -225,6 +248,64 @@ const MCP_TOOLS = [
     inputSchema: { type: "object", properties: { days: { type: "integer" } } } },
   { name: "health_summary", description: "健康概况：在吃什么药、下次疫苗、最近就诊",
     inputSchema: { type: "object", properties: { patient_id: { type: "string" } } } },
+{ name: "list_allergies", description: "列出某病人的过敏史",
+    inputSchema: { type: "object", properties: { patient_id: { type: "string" } },
+      required: ["patient_id"] } },
+  { name: "add_allergy", description: "添加过敏史",
+    inputSchema: { type: "object", properties: {
+      patient_id: { type: "string" }, allergen: { type: "string", description: "过敏原" },
+      reaction: { type: "string", description: "反应症状" },
+      severity: { type: "string", description: "严重程度：mild/moderate/severe" },
+      notes: { type: "string" } }, required: ["patient_id", "allergen"] } },
+  { name: "delete_allergy", description: "删除过敏史（仅限该病人的记录）",
+    inputSchema: { type: "object", properties: {
+      id: { type: "string" }, patient_id: { type: "string" } },
+      required: ["id", "patient_id"] } },
+  { name: "list_chronic_conditions", description: "列出某病人的慢性病史",
+    inputSchema: { type: "object", properties: { patient_id: { type: "string" } },
+      required: ["patient_id"] } },
+  { name: "add_chronic_condition", description: "添加慢性病史",
+    inputSchema: { type: "object", properties: {
+      patient_id: { type: "string" }, condition_name: { type: "string", description: "疾病名" },
+      diagnosed_date: { type: "string", description: "确诊日期" },
+      status: { type: "string", description: "active/managed/cured" },
+      notes: { type: "string" } }, required: ["patient_id", "condition_name"] } },
+  { name: "update_chronic_condition", description: "更新慢性病史（仅限该病人的记录）",
+    inputSchema: { type: "object", properties: {
+      id: { type: "string" }, patient_id: { type: "string" },
+      condition_name: { type: "string" }, diagnosed_date: { type: "string" },
+      status: { type: "string", description: "active/managed/cured" }, notes: { type: "string" } },
+      required: ["id", "patient_id"] } },
+  { name: "delete_chronic_condition", description: "删除慢性病史（仅限该病人的记录）",
+    inputSchema: { type: "object", properties: {
+      id: { type: "string" }, patient_id: { type: "string" } },
+      required: ["id", "patient_id"] } },
+  { name: "list_surgeries", description: "列出某病人的手术史",
+    inputSchema: { type: "object", properties: { patient_id: { type: "string" } },
+      required: ["patient_id"] } },
+  { name: "add_surgery", description: "添加手术史",
+    inputSchema: { type: "object", properties: {
+      patient_id: { type: "string" }, surgery_name: { type: "string", description: "手术名" },
+      surgery_date: { type: "string" }, hospital: { type: "string" },
+      surgeon: { type: "string" }, notes: { type: "string" } },
+      required: ["patient_id", "surgery_name"] } },
+  { name: "delete_surgery", description: "删除手术史（仅限该病人的记录）",
+    inputSchema: { type: "object", properties: {
+      id: { type: "string" }, patient_id: { type: "string" } },
+      required: ["id", "patient_id"] } },
+  { name: "list_emergency_contacts", description: "列出某病人的紧急联系人",
+    inputSchema: { type: "object", properties: { patient_id: { type: "string" } },
+      required: ["patient_id"] } },
+  { name: "add_emergency_contact", description: "添加紧急联系人；设为首选时，同一病人的其他联系人取消首选",
+    inputSchema: { type: "object", properties: {
+      patient_id: { type: "string" }, name: { type: "string" },
+      relationship: { type: "string" }, phone: { type: "string" },
+      is_primary: { type: "boolean", description: "是否首选" } },
+      required: ["patient_id", "name"] } },
+  { name: "delete_emergency_contact", description: "删除紧急联系人（仅限该病人的记录）",
+    inputSchema: { type: "object", properties: {
+      id: { type: "string" }, patient_id: { type: "string" } },
+      required: ["id", "patient_id"] } },
 ];
 
 // 写操作前校验病人存在，防止孤儿记录
@@ -232,6 +313,18 @@ async function requirePatient(DB, patient_id) {
   if (!patient_id) throw new InputError("patient_id_required");
   const row = await DB.prepare("SELECT 1 AS ok FROM patients WHERE id=?").bind(patient_id).first();
   if (!row) throw new InputError("patient_not_found");
+}
+
+async function deleteOwned(DB, table, args) {
+  const notFound = PATIENT_SCOPED_TABLES[table];
+  if (!notFound) throw new Error("bad table");
+  if (!args.id) throw new InputError("id_required");
+  await requirePatient(DB, args.patient_id);
+  const res = await DB.prepare(`DELETE FROM ${table} WHERE id=? AND patient_id=?`)
+    .bind(args.id, args.patient_id).run();
+  const changes = res && res.meta ? res.meta.changes : 0;
+  if (!changes) throw new InputError(notFound);
+  return { ok: true };
 }
 
 async function requireOwnLabReport(DB, lab_report_id, patient_id) {
@@ -427,6 +520,103 @@ async function callTool(name, args, env) {
       recent_visits: visit.results,
     };
   }
+  if (name === "list_allergies") {
+    await requirePatient(DB, args.patient_id);
+    const r = await DB.prepare("SELECT * FROM allergies WHERE patient_id=? ORDER BY created_at DESC")
+      .bind(args.patient_id).all();
+    return { allergies: r.results };
+  }
+  if (name === "add_allergy") {
+    await requirePatient(DB, args.patient_id);
+    if (!args.allergen) throw new InputError("allergen_required");
+    const severity = args.severity || null;
+    if (severity && !ALLERGY_SEVERITIES.includes(severity)) throw new InputError("invalid_severity");
+    const id = newId("alg");
+    await DB.prepare(`INSERT INTO allergies (id,patient_id,allergen,reaction,severity,notes)
+      VALUES (?,?,?,?,?,?)`).bind(id, args.patient_id, args.allergen,
+      args.reaction || null, severity, args.notes || null).run();
+    return { id };
+  }
+  if (name === "delete_allergy") return deleteOwned(DB, "allergies", args);
+  if (name === "list_chronic_conditions") {
+    await requirePatient(DB, args.patient_id);
+    const r = await DB.prepare(
+      "SELECT * FROM chronic_conditions WHERE patient_id=? ORDER BY created_at DESC")
+      .bind(args.patient_id).all();
+    return { chronic_conditions: r.results };
+  }
+  if (name === "add_chronic_condition") {
+    await requirePatient(DB, args.patient_id);
+    if (!args.condition_name) throw new InputError("condition_name_required");
+    const status = args.status || "active";
+    if (!CHRONIC_STATUSES.includes(status)) throw new InputError("invalid_status");
+    const id = newId("cond");
+    await DB.prepare(`INSERT INTO chronic_conditions (id,patient_id,condition_name,diagnosed_date,status,notes)
+      VALUES (?,?,?,?,?,?)`).bind(id, args.patient_id, args.condition_name,
+      args.diagnosed_date || null, status, args.notes || null).run();
+    return { id };
+  }
+  if (name === "update_chronic_condition") {
+    if (!args.id) throw new InputError("id_required");
+    await requirePatient(DB, args.patient_id);
+    const sets = [], params = [];
+    if (args.condition_name !== undefined) {
+      if (!args.condition_name) throw new InputError("condition_name_required");
+      sets.push("condition_name=?"); params.push(args.condition_name);
+    }
+    if (args.diagnosed_date !== undefined) { sets.push("diagnosed_date=?"); params.push(args.diagnosed_date || null); }
+    if (args.status !== undefined) {
+      if (!CHRONIC_STATUSES.includes(args.status)) throw new InputError("invalid_status");
+      sets.push("status=?"); params.push(args.status);
+    }
+    if (args.notes !== undefined) { sets.push("notes=?"); params.push(args.notes || null); }
+    if (!sets.length) throw new InputError("nothing_to_update");
+    params.push(args.id, args.patient_id);
+    const res = await DB.prepare(
+      `UPDATE chronic_conditions SET ${sets.join(",")} WHERE id=? AND patient_id=?`).bind(...params).run();
+    const changes = res && res.meta ? res.meta.changes : 0;
+    if (!changes) throw new InputError("chronic_condition_not_found");
+    return { ok: true };
+  }
+  if (name === "delete_chronic_condition") return deleteOwned(DB, "chronic_conditions", args);
+  if (name === "list_surgeries") {
+    await requirePatient(DB, args.patient_id);
+    const r = await DB.prepare("SELECT * FROM surgeries WHERE patient_id=? ORDER BY created_at DESC")
+      .bind(args.patient_id).all();
+    return { surgeries: r.results };
+  }
+  if (name === "add_surgery") {
+    await requirePatient(DB, args.patient_id);
+    if (!args.surgery_name) throw new InputError("surgery_name_required");
+    const id = newId("surg");
+    await DB.prepare(`INSERT INTO surgeries (id,patient_id,surgery_name,surgery_date,hospital,surgeon,notes)
+      VALUES (?,?,?,?,?,?,?)`).bind(id, args.patient_id, args.surgery_name,
+      args.surgery_date || null, args.hospital || null, args.surgeon || null, args.notes || null).run();
+    return { id };
+  }
+  if (name === "delete_surgery") return deleteOwned(DB, "surgeries", args);
+  if (name === "list_emergency_contacts") {
+    await requirePatient(DB, args.patient_id);
+    const r = await DB.prepare(
+      "SELECT * FROM emergency_contacts WHERE patient_id=? ORDER BY created_at DESC")
+      .bind(args.patient_id).all();
+    return { emergency_contacts: r.results };
+  }
+  if (name === "add_emergency_contact") {
+    await requirePatient(DB, args.patient_id);
+    if (!args.name) throw new InputError("name_required");
+    const primary = args.is_primary ? 1 : 0;
+    if (primary) {
+      await DB.prepare("UPDATE emergency_contacts SET is_primary=? WHERE patient_id=?")
+        .bind(0, args.patient_id).run();
+    }
+    const id = newId("ec");
+    await DB.prepare(`INSERT INTO emergency_contacts (id,patient_id,name,relationship,phone,is_primary)
+      VALUES (?,?,?,?,?,?)`).bind(id, args.patient_id, args.name,
+      args.relationship || null, args.phone || null, primary).run();
+    return { id };
+  }
+  if (name === "delete_emergency_contact") return deleteOwned(DB, "emergency_contacts", args);
   throw new Error(`unknown tool: ${name}`);
 }
 
