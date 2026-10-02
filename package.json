@@ -3,8 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node test/basic.js && node test/e2e.js",
-    "test:unit": "node test/basic.js",
+    "test": "node test/basic.js && node test/viewer.js && node test/e2e.js",
+    "test:unit": "node test/basic.js && node test/viewer.js",
     "test:e2e": "node test/e2e.js"
   },
   "devDependencies": {

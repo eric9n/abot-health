@@ -23,7 +23,10 @@ ok(src.includes("safeEqual"), "static: constant-time token compare");
 
 // ---------- 内存 fake D1 ----------
 function fakeD1() {
-  const tables = { patients: [], visits: [], prescriptions: [], lab_reports: [], lab_report_files: [], vaccinations: [] };
+  const tables = {
+    patients: [], visits: [], prescriptions: [], lab_reports: [], lab_report_files: [], vaccinations: [],
+    insurance: [],
+  };
   const norm = (s) => s.replace(/\s+/g, " ").trim();
   const stripWhere11 = (w) => w.replace(/^1\s*=\s*1\s*(AND\s+)?/i, "").replace(/\s+AND\s+1\s*=\s*1/i, "").trim();
 
@@ -120,13 +123,23 @@ function fakeD1() {
             tables[m[1]].push(row);
             return { meta: { changes: 1 } };
           }
-          m = norm(sql).match(/^UPDATE (\w+) SET (.+) WHERE id=\?$/i);
+          m = norm(sql).match(/^UPDATE (\w+) SET (.+) WHERE id=\?( AND patient_id=\?)?$/i);
           if (m) {
             const sets = m[2].split(",").map((s) => s.trim().match(/^(\w+)=\?$/)[1]);
-            const id = params[params.length - 1];
-            const row = tables[m[1]].find((r) => r.id === id);
+            const scoped = !!m[3];
+            const id = params[params.length - (scoped ? 2 : 1)];
+            const patientId = scoped ? params[params.length - 1] : undefined;
+            const row = tables[m[1]].find((r) => r.id === id && (patientId === undefined || r.patient_id === patientId));
             if (!row) return { meta: { changes: 0 } };
             sets.forEach((c, i) => { row[c] = params[i]; });
+            return { meta: { changes: 1 } };
+          }
+          m = norm(sql).match(/^DELETE FROM (\w+) WHERE id=\? AND patient_id=\?$/i);
+          if (m) {
+            const list = tables[m[1]];
+            const idx = list.findIndex((r) => r.id === params[0] && r.patient_id === params[1]);
+            if (idx < 0) return { meta: { changes: 0 } };
+            list.splice(idx, 1);
             return { meta: { changes: 1 } };
           }
           throw new Error("fakeD1: unsupported run: " + norm(sql));
@@ -199,8 +212,11 @@ const env = mcpEnv();
   const r3 = await postRpc(env, { jsonrpc: "2.0", id: 1, method: "tools/list" });
   eq(r3.status, 200, "auth: valid token + email -> 200");
   const tools = (await r3.json()).result.tools;
-  eq(tools.length, 15, "tools/list: 15 tools");
-  for (const name of ["upload_lab_report_file", "get_lab_report_file", "list_lab_report_files"]) {
+  eq(tools.length, 32, "tools/list: 32 tools");
+  for (const name of [
+    "upload_lab_report_file", "get_lab_report_file", "list_lab_report_files",
+    "list_insurance", "add_insurance", "update_insurance", "delete_insurance",
+  ]) {
     ok(tools.some((t) => t.name === name), `tools/list includes ${name}`);
   }
   // OWNER_EMAIL allowlist
@@ -460,6 +476,104 @@ ok(src.includes("env.FILES"), "static: R2 binding FILES");
   eq(r2.status, 400, "json null -> 400");
   eq(j2.error && j2.error.message, "invalid_request", "json null message");
   ok(!JSON.stringify(j2).includes("TypeError"), "json null hides TypeError");
+}
+
+// ---------- 医疗保险：按病人隔离，更新和删除不能碰到别人的保单 ----------
+{
+  const owner = await call(env, "add_patient", { name: "投保人甲" });
+  const other = await call(env, "add_patient", { name: "投保人乙" });
+  const missing = await call(env, "add_insurance", { patient_id: "nope", provider: "平安健康" });
+  eq(missing.__error && missing.__error.message, "patient_not_found", "add_insurance bogus patient");
+  const noPid = await call(env, "add_insurance", { provider: "平安健康" });
+  eq(noPid.__error && noPid.__error.message, "patient_id_required", "add_insurance missing patient");
+  const noProvider = await call(env, "add_insurance", { patient_id: owner.id, provider: "  " });
+  eq(noProvider.__error && noProvider.__error.message, "provider_required", "add_insurance blank provider");
+
+  const added = await call(env, "add_insurance", {
+    patient_id: owner.id,
+    provider: " 平安健康 ",
+    policy_number: "PH-1001",
+    plan_type: "商保",
+    coverage_details: "住院报销 80%",
+    valid_from: "2026-01-01",
+    valid_to: "2026-12-31",
+    contact_phone: "95511",
+    notes: "主险",
+  });
+  ok(added.id && added.id.startsWith("ins_"), "add_insurance returns ins_ id");
+  const minimal = await call(env, "add_insurance", { patient_id: owner.id, provider: "中国人寿" });
+  ok(minimal.id.startsWith("ins_"), "add_insurance provider only");
+  const otherPol = await call(env, "add_insurance", {
+    patient_id: other.id, provider: "城乡居民医保", policy_number: "CX-9", plan_type: "城乡居民医保",
+  });
+
+  const listed = await call(env, "list_insurance", { patient_id: owner.id });
+  eq(listed.insurance.length, 2, "list_insurance owner count");
+  ok(listed.insurance.every((row) => row.patient_id === owner.id), "list_insurance stays on that patient");
+  const full = listed.insurance.find((row) => row.id === added.id);
+  eq(full.provider, "平安健康", "provider trimmed");
+  eq(full.policy_number, "PH-1001", "policy_number roundtrip");
+  eq(full.plan_type, "商保", "plan_type roundtrip");
+  eq(full.coverage_details, "住院报销 80%", "coverage_details roundtrip");
+  eq(full.valid_from, "2026-01-01", "valid_from roundtrip");
+  eq(full.valid_to, "2026-12-31", "valid_to roundtrip");
+  eq(full.contact_phone, "95511", "contact_phone roundtrip");
+  eq(full.notes, "主险", "notes roundtrip");
+  const bare = listed.insurance.find((row) => row.id === minimal.id);
+  eq(bare.policy_number, null, "optional policy_number null");
+  eq(bare.plan_type, null, "optional plan_type null");
+  const listOther = await call(env, "list_insurance", { patient_id: other.id });
+  eq(listOther.insurance.length, 1, "list_insurance other count");
+  eq(listOther.insurance[0].policy_number, "CX-9", "other patient policy");
+  ok(!listOther.insurance.some((row) => row.policy_number === "PH-1001"), "list hides the other patient's policy");
+  const listMissing = await call(env, "list_insurance", {});
+  eq(listMissing.__error && listMissing.__error.message, "patient_id_required", "list_insurance requires patient_id");
+  const listBogus = await call(env, "list_insurance", { patient_id: "nope" });
+  eq(listBogus.__error && listBogus.__error.message, "patient_not_found", "list_insurance bogus patient");
+  const injected = await call(env, "list_insurance", { patient_id: "' OR 1=1 --" });
+  eq(injected.__error && injected.__error.message, "patient_not_found", "list_insurance injection finds nobody");
+
+  const emptyPatch = await call(env, "update_insurance", { id: added.id, patient_id: owner.id });
+  eq(emptyPatch.__error && emptyPatch.__error.message, "nothing_to_update", "update_insurance empty patch");
+  const blankProvider = await call(env, "update_insurance", { id: added.id, patient_id: owner.id, provider: " " });
+  eq(blankProvider.__error && blankProvider.__error.message, "provider_required", "update_insurance blank provider");
+  const still = await call(env, "list_insurance", { patient_id: owner.id });
+  eq(still.insurance.find((row) => row.id === added.id).provider, "平安健康", "rejected update keeps provider");
+
+  const cross = await call(env, "update_insurance", {
+    id: added.id, patient_id: other.id, provider: "被改掉", notes: "越权",
+  });
+  eq(cross.__error && cross.__error.message, "insurance_not_found", "update_insurance other patient");
+  const afterCross = await call(env, "list_insurance", { patient_id: owner.id });
+  eq(afterCross.insurance.find((row) => row.id === added.id).provider, "平安健康", "cross update does not write");
+  eq(afterCross.insurance.find((row) => row.id === added.id).notes, "主险", "cross update keeps notes");
+
+  const updated = await call(env, "update_insurance", {
+    id: added.id, patient_id: owner.id, coverage_details: "住院报销 90%", valid_to: "2027-01-31", policy_number: "",
+  });
+  eq(updated.ok, true, "update_insurance ok");
+  const after = (await call(env, "list_insurance", { patient_id: owner.id })).insurance.find((row) => row.id === added.id);
+  eq(after.coverage_details, "住院报销 90%", "coverage updated");
+  eq(after.valid_to, "2027-01-31", "valid_to updated");
+  eq(after.policy_number, null, "empty policy_number clears");
+  eq(after.provider, "平安健康", "omitted provider stays");
+  eq(after.plan_type, "商保", "omitted plan_type stays");
+
+  const delCross = await call(env, "delete_insurance", { id: added.id, patient_id: other.id });
+  eq(delCross.__error && delCross.__error.message, "insurance_not_found", "delete_insurance other patient");
+  ok((await call(env, "list_insurance", { patient_id: owner.id })).insurance.some((row) => row.id === added.id), "cross delete keeps the policy");
+  const delMissingPatient = await call(env, "delete_insurance", { id: added.id, patient_id: "nope" });
+  eq(delMissingPatient.__error && delMissingPatient.__error.message, "patient_not_found", "delete_insurance bogus patient");
+  const delNoId = await call(env, "delete_insurance", { patient_id: owner.id });
+  eq(delNoId.__error && delNoId.__error.message, "id_required", "delete_insurance missing id");
+  const delUnknown = await call(env, "delete_insurance", { id: "ins_missing", patient_id: owner.id });
+  eq(delUnknown.__error && delUnknown.__error.message, "insurance_not_found", "delete_insurance missing id");
+  const removed = await call(env, "delete_insurance", { id: minimal.id, patient_id: owner.id });
+  eq(removed.ok, true, "delete_insurance ok");
+  const left = await call(env, "list_insurance", { patient_id: owner.id });
+  eq(left.insurance.length, 1, "delete removes only that policy");
+  eq(left.insurance[0].id, added.id, "remaining policy is the other one");
+  eq((await call(env, "list_insurance", { patient_id: other.id })).insurance.length, 1, "delete does not touch the other patient");
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

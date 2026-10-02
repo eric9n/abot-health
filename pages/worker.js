@@ -391,7 +391,8 @@ h2 { font-size: 16px; }
 
 .due-banner li { margin-left: 1.1em; }
 
-.vax.is-due {
+.vax.is-due,
+.ins.is-due {
   background: #fff8e1;
   border-color: var(--yellow-line);
 }
@@ -593,6 +594,7 @@ const TABS = [
   { id: "chronic", label: "慢性病" },
   { id: "surgeries", label: "手术史" },
   { id: "contacts", label: "紧急联系人" },
+  { id: "insurance", label: "医保" },
 ];
 
 const RX_LABEL = {
@@ -723,6 +725,30 @@ function dueVaccines(list) {
     })
     .filter(Boolean)
     .sort((a, b) => a.due - b.due);
+}
+
+const INSURANCE_SOON_DAYS = 30;
+
+function expiringInsurance(list) {
+  const today = startOfToday();
+  const horizon = new Date(today.getFullYear(), today.getMonth(), today.getDate() + INSURANCE_SOON_DAYS);
+  return (list || [])
+    .map((row) => {
+      const day = parseDay(row.valid_to);
+      if (!day || day > horizon) return null;
+      return { ...row, due: day, expired: day < today };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.due - b.due);
+}
+
+function validityText(row) {
+  const from = formatDate(row.valid_from);
+  const to = formatDate(row.valid_to);
+  if (from && to) return \`\${from} 至 \${to}\`;
+  if (from) return \`\${from} 起\`;
+  if (to) return \`至 \${to}\`;
+  return "";
 }
 
 function doseText(row) {
@@ -1009,6 +1035,47 @@ function renderSurgeries(detail) {
   return stack;
 }
 
+function renderInsurance(detail) {
+  const list = detail.insurance || [];
+  if (!list.length) return el("p", { class: "hint", text: "还没有医疗保险" });
+  const expiring = expiringInsurance(list);
+  const banner = expiring.length
+    ? el("div", { class: "due-banner" }, [
+      el("h3", {
+        text: expiring.some((row) => row.expired)
+          ? \`有 \${expiring.length} 份保单需关注，含已到期\`
+          : \`有 \${expiring.length} 份保单将在 30 天内到期\`,
+      }),
+      el("ul", {}, expiring.map((row) => el("li", {
+        text: [row.provider, row.policy_number, formatDate(row.valid_to), row.expired ? "已到期" : "即将到期"].filter(Boolean).join(" · "),
+      }))),
+    ])
+    : null;
+  const rows = [...list].sort((a, b) => String(a.valid_to || "9999-99-99").localeCompare(String(b.valid_to || "9999-99-99")));
+  const stack = el("div", { class: "stack" }, [banner]);
+  for (const row of rows) {
+    const flag = expiring.find((item) => item.id === row.id);
+    stack.append(el("article", { class: "card ins" + (flag ? " is-due" : "") }, [
+      el("div", { class: "vax-head" }, [
+        el("h3", {}, [
+          row.provider || "未填写保险公司",
+          flag ? el("span", { class: "tag", text: flag.expired ? "已到期" : "即将到期" }) : null,
+        ]),
+        row.plan_type ? el("span", { class: "pill", text: row.plan_type }) : null,
+      ]),
+      el("div", { class: "meta-grid" }, [
+        meta("保单号", row.policy_number),
+        meta("险种", row.plan_type),
+        meta("有效期", validityText(row)),
+        meta("保障内容", row.coverage_details),
+        meta("客服电话", row.contact_phone),
+        meta("备注", row.notes),
+      ]),
+    ]));
+  }
+  return stack;
+}
+
 function renderContacts(detail) {
   if (!detail.emergency_contacts.length) return el("p", { class: "hint", text: "还没有紧急联系人" });
   const rows = [...detail.emergency_contacts].sort((a, b) => (b.is_primary || 0) - (a.is_primary || 0));
@@ -1083,6 +1150,7 @@ function renderMain() {
     ]));
   }
   const due = dueVaccines(state.detail.vaccinations);
+  const expiring = expiringInsurance(state.detail.insurance);
   panel.append(el("div", { class: "tabs", role: "tablist" }, TABS.map((tab) => {
     const button = el("button", {
       type: "button",
@@ -1095,6 +1163,7 @@ function renderMain() {
     });
     if (tab.id === "vaccines" && due.length) button.append(el("span", { class: "badge", text: String(due.length) }));
     if (tab.id === "allergies" && severe.length) button.append(el("span", { class: "badge badge-red", text: String(severe.length) }));
+    if (tab.id === "insurance" && expiring.length) button.append(el("span", { class: "badge", text: String(expiring.length) }));
     return button;
   })));
   const body = el("div", { id: "tab-panel", role: "tabpanel", "aria-labelledby": \`tab-\${state.tab}\` });
@@ -1105,7 +1174,8 @@ function renderMain() {
   else if (state.tab === "allergies") body.append(renderAllergies(state.detail));
   else if (state.tab === "chronic") body.append(renderChronic(state.detail));
   else if (state.tab === "surgeries") body.append(renderSurgeries(state.detail));
-  else body.append(renderContacts(state.detail));
+  else if (state.tab === "contacts") body.append(renderContacts(state.detail));
+  else body.append(renderInsurance(state.detail));
   panel.append(body);
   main.append(panel);
   if (state.tab === "labs") loadThumbs(state.generation);
@@ -1329,14 +1399,30 @@ async function getPatients(env) {
   return { patients: r.results || [] };
 }
 
+let insuranceReady = null;
+function ensureInsurance(env) {
+  if (!insuranceReady) {
+    insuranceReady = env.DB.prepare(`CREATE TABLE IF NOT EXISTS insurance (
+      id TEXT PRIMARY KEY, patient_id TEXT NOT NULL, provider TEXT NOT NULL,
+      policy_number TEXT, plan_type TEXT, coverage_details TEXT,
+      valid_from TEXT, valid_to TEXT, contact_phone TEXT, notes TEXT,
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')))`).run().catch((err) => {
+      insuranceReady = null;
+      throw err;
+    });
+  }
+  return insuranceReady;
+}
+
 async function getPatient(env, id) {
   if (!id) return null;
   const patient = await env.DB.prepare(
     "SELECT id, name, relationship, dob, notes, created_at FROM patients WHERE id=?"
   ).bind(id).first();
   if (!patient) return null;
+  await ensureInsurance(env);
   const q = (sql) => env.DB.prepare(sql).bind(id).all().then((r) => r.results || []);
-  const [visits, prescriptions, reports, files, vaccinations, allergies, chronic_conditions, surgeries, emergency_contacts] =
+  const [visits, prescriptions, reports, files, vaccinations, allergies, chronic_conditions, surgeries, emergency_contacts, insurance] =
     await Promise.all([
       q("SELECT * FROM visits WHERE patient_id=? ORDER BY visit_date DESC"),
       q("SELECT * FROM prescriptions WHERE patient_id=? ORDER BY created_at DESC"),
@@ -1347,8 +1433,9 @@ async function getPatient(env, id) {
       q("SELECT * FROM chronic_conditions WHERE patient_id=? ORDER BY created_at DESC"),
       q("SELECT * FROM surgeries WHERE patient_id=? ORDER BY surgery_date DESC"),
       q("SELECT * FROM emergency_contacts WHERE patient_id=? ORDER BY is_primary DESC, created_at DESC"),
+      q("SELECT * FROM insurance WHERE patient_id=? ORDER BY created_at DESC"),
     ]);
-  return { patient, visits, prescriptions, reports, files, vaccinations, allergies, chronic_conditions, surgeries, emergency_contacts };
+  return { patient, visits, prescriptions, reports, files, vaccinations, allergies, chronic_conditions, surgeries, emergency_contacts, insurance };
 }
 
 function bytesToBase64(bytes) {

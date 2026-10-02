@@ -141,12 +141,13 @@ async function main() {
     const listed = await rpc({ jsonrpc: "2.0", id: 7, method: "tools/list" });
     eq(listed.status, 200, "valid token + email -> 200");
     const names = (listed.json.result.tools || []).map((t) => t.name);
-    eq(names.length, 12, "tools/list count");
+    eq(names.length, 32, "tools/list count");
     for (const n of [
       "add_patient", "list_patients", "add_visit", "list_visits",
       "add_prescription", "list_prescriptions", "update_prescription",
       "add_lab_report", "list_lab_reports", "add_vaccination",
       "upcoming_vaccinations", "health_summary",
+      "list_insurance", "add_insurance", "update_insurance", "delete_insurance",
     ]) ok(names.includes(n), `tool present: ${n}`);
 
     const lower = await rpc(
@@ -489,6 +490,92 @@ async function main() {
   ok(sumAll.active_medications.some((m) => m.drug_name === `DRUG_A_ON_${mark}`), "family summary has A drug");
   ok(sumAll.active_medications.some((m) => m.drug_name === `DRUG_B_${mark}`), "family summary has B drug");
   ok(!sumAll.active_medications.some((m) => m.drug_name === `DRUG_A_OFF_${mark}`), "family summary hides finished");
+
+  // 医疗保险：字段往返、按病人隔离，更新和删除不能改到别人的保单
+  const insNo = await call("add_insurance", { provider: "平安健康" });
+  toolErr(insNo, -32602, "patient_id_required", "add_insurance missing patient");
+  const insBad = await call("add_insurance", { patient_id: "pat_missing", provider: "平安健康" });
+  toolErr(insBad, -32602, "patient_not_found", "add_insurance unknown patient");
+  const insBlank = await call("add_insurance", { patient_id: a.id, provider: "   " });
+  toolErr(insBlank, -32602, "provider_required", "add_insurance blank provider");
+
+  const insA = await call("add_insurance", {
+    patient_id: a.id,
+    provider: `平安健康_${mark}`,
+    policy_number: `PH_${mark}`,
+    plan_type: "商保",
+    coverage_details: `住院报销 80%_${mark}`,
+    valid_from: "2026-01-01",
+    valid_to: dueSoon,
+    contact_phone: "95511",
+    notes: `备注保单_${mark}`,
+  });
+  ok(insA.id && insA.id.startsWith("ins_"), "add_insurance id");
+  const insA2 = await call("add_insurance", { patient_id: a.id, provider: `中国人寿_${mark}` });
+  ok(insA2.id && insA2.id !== insA.id, "second insurance id");
+  const insB = await call("add_insurance", {
+    patient_id: b.id, provider: `城乡居民医保_${mark}`, policy_number: `CX_${mark}`, plan_type: "城乡居民医保",
+    coverage_details: `门诊额度_${mark}`, valid_to: dueFar,
+  });
+  ok(insB.id.startsWith("ins_"), "add_insurance B");
+
+  const insListA = await call("list_insurance", { patient_id: a.id });
+  eq(insListA.insurance.length, 2, "list_insurance A count");
+  ok(insListA.insurance.every((row) => row.patient_id === a.id), "list_insurance A only A");
+  const insRow = insListA.insurance.find((row) => row.id === insA.id);
+  eq(insRow.provider, `平安健康_${mark}`, "insurance provider roundtrip");
+  eq(insRow.policy_number, `PH_${mark}`, "insurance policy_number roundtrip");
+  eq(insRow.plan_type, "商保", "insurance plan_type roundtrip");
+  eq(insRow.coverage_details, `住院报销 80%_${mark}`, "insurance coverage roundtrip");
+  eq(insRow.valid_from, "2026-01-01", "insurance valid_from roundtrip");
+  eq(insRow.valid_to, dueSoon, "insurance valid_to roundtrip");
+  eq(insRow.contact_phone, "95511", "insurance phone roundtrip");
+  eq(insRow.notes, `备注保单_${mark}`, "insurance notes roundtrip");
+  ok(insRow.created_at && insRow.created_at.includes("T"), "insurance created_at");
+  const insBare = insListA.insurance.find((row) => row.id === insA2.id);
+  eq(insBare.policy_number, null, "insurance optional policy null");
+  eq(insBare.coverage_details, null, "insurance optional coverage null");
+  const insListB = await call("list_insurance", { patient_id: b.id });
+  eq(insListB.insurance.length, 1, "list_insurance B count");
+  eq(insListB.insurance[0].policy_number, `CX_${mark}`, "list_insurance B policy");
+  ok(!insListA.insurance.some((row) => row.policy_number === `CX_${mark}`), "list_insurance A hides B");
+  const insInj = await call("list_insurance", { patient_id: "' OR 1=1 --" });
+  toolErr(insInj, -32602, "patient_not_found", "list_insurance injection");
+
+  const insEmpty = await call("update_insurance", { id: insA.id, patient_id: a.id });
+  toolErr(insEmpty, -32602, "nothing_to_update", "update_insurance empty patch");
+  const insCross = await call("update_insurance", {
+    id: insA.id, patient_id: b.id, provider: `被改掉_${mark}`, notes: "越权",
+  });
+  toolErr(insCross, -32602, "insurance_not_found", "update_insurance other patient");
+  const insAfterCross = (await call("list_insurance", { patient_id: a.id })).insurance.find((row) => row.id === insA.id);
+  eq(insAfterCross.provider, `平安健康_${mark}`, "cross update keeps provider");
+  eq(insAfterCross.notes, `备注保单_${mark}`, "cross update keeps notes");
+  const insUpdated = await call("update_insurance", {
+    id: insA.id, patient_id: a.id, coverage_details: `住院报销 90%_${mark}`, valid_to: dueFar, contact_phone: "",
+  });
+  eq(insUpdated.ok, true, "update_insurance ok");
+  const insAfter = (await call("list_insurance", { patient_id: a.id })).insurance.find((row) => row.id === insA.id);
+  eq(insAfter.coverage_details, `住院报销 90%_${mark}`, "insurance coverage updated");
+  eq(insAfter.valid_to, dueFar, "insurance valid_to updated");
+  eq(insAfter.contact_phone, null, "empty phone clears");
+  eq(insAfter.provider, `平安健康_${mark}`, "omitted provider stays");
+  eq(insAfter.plan_type, "商保", "omitted plan_type stays");
+  eq((await call("list_insurance", { patient_id: b.id })).insurance[0].provider, `城乡居民医保_${mark}`, "B unchanged after A update");
+
+  const delCross = await call("delete_insurance", { id: insA.id, patient_id: b.id });
+  toolErr(delCross, -32602, "insurance_not_found", "delete_insurance other patient");
+  ok((await call("list_insurance", { patient_id: a.id })).insurance.some((row) => row.id === insA.id), "cross delete keeps policy");
+  const delNoId = await call("delete_insurance", { patient_id: a.id });
+  toolErr(delNoId, -32602, "id_required", "delete_insurance missing id");
+  const delMissing = await call("delete_insurance", { id: "ins_missing", patient_id: a.id });
+  toolErr(delMissing, -32602, "insurance_not_found", "delete_insurance unknown id");
+  const delOk = await call("delete_insurance", { id: insA2.id, patient_id: a.id });
+  eq(delOk.ok, true, "delete_insurance ok");
+  const insLeft = await call("list_insurance", { patient_id: a.id });
+  eq(insLeft.insurance.length, 1, "delete drops one policy");
+  eq(insLeft.insurance[0].id, insA.id, "deleted the intended policy");
+  eq((await call("list_insurance", { patient_id: b.id })).insurance.length, 1, "delete leaves the other patient");
 
   // 未带 patient_id 的列表仍带正确归属，不把行改挂到别人身上
   const allVisits = await call("list_visits", {});

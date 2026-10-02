@@ -332,7 +332,8 @@ h2 { font-size: 16px; }
 
 .due-banner li { margin-left: 1.1em; }
 
-.vax.is-due {
+.vax.is-due,
+.ins.is-due {
   background: #fff8e1;
   border-color: var(--yellow-line);
 }
