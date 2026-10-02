@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>abot-health 病历查看 - 设计原型</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;background:#f5f7fa;color:#1a1a1a}
+.header{background:#fff;border-bottom:1px solid #e5e7eb;padding:16px 24px;display:flex;align-items:center;gap:12px;position:sticky;top:0;z-index:10}
+.header .logo{width:36px;height:36px;background:linear-gradient(135deg,#10b981,#059669);border-radius:10px;display:flex;align-items:center;justify-content:center;color:#fff;font-size:20px}
+.header h1{font-size:18px;font-weight:600}
+.header .sub{color:#6b7280;font-size:13px;margin-left:auto}
+.layout{display:flex;max-width:1400px;margin:0 auto;min-height:calc(100vh - 69px)}
+.sidebar{width:300px;background:#fff;border-right:1px solid #e5e7eb;padding:16px;overflow-y:auto}
+.search{width:100%;padding:10px 14px;border:1px solid #e5e7eb;border-radius:10px;font-size:14px;margin-bottom:12px;outline:none}
+.search:focus{border-color:#10b981}
+.patient-card{padding:14px;border:1px solid #e5e7eb;border-radius:12px;margin-bottom:10px;cursor:pointer;transition:all .15s}
+.patient-card:hover{border-color:#10b981}
+.patient-card.active{border-color:#10b981;background:#ecfdf5}
+.patient-card .name{font-weight:600;font-size:15px}
+.patient-card .meta{color:#6b7280;font-size:12px;margin-top:4px}
+.patient-card .tag{display:inline-block;background:#eef2ff;color:#4f46e5;font-size:11px;padding:2px 8px;border-radius:20px;margin-top:6px}
+.main{flex:1;padding:24px;overflow-y:auto}
+.patient-head{background:#fff;border-radius:16px;padding:24px;margin-bottom:16px;display:flex;gap:20px;align-items:center}
+.avatar{width:64px;height:64px;background:linear-gradient(135deg,#a7f3d0,#6ee7b7);border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:28px}
+.patient-head h2{font-size:20px}
+.patient-head .info{color:#6b7280;font-size:13px;margin-top:4px}
+.tabs{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap}
+.tab{padding:10px 20px;background:#fff;border:1px solid #e5e7eb;border-radius:10px;cursor:pointer;font-size:14px;transition:all .15s}
+.tab.active{background:#10b981;color:#fff;border-color:#10b981}
+.section{background:#fff;border-radius:16px;padding:20px;margin-bottom:16px}
+.section h3{font-size:16px;margin-bottom:14px}
+.record{border-left:3px solid #10b981;padding:12px 16px;margin-bottom:12px;background:#f9fafb;border-radius:0 10px 10px 0}
+.record .date{color:#10b981;font-size:12px;font-weight:600}
+.record .title{font-weight:600;margin:4px 0}
+.record .desc{color:#4b5563;font-size:13px;line-height:1.6}
+.record .files{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
+.file-thumb{width:80px;height:80px;border-radius:10px;object-fit:cover;cursor:pointer;border:1px solid #e5e7eb;background:#e5e7eb;display:flex;align-items:center;justify-content:center;font-size:12px;color:#6b7280}
+.file-pdf{display:flex;align-items:center;gap:6px;padding:10px 14px;background:#fef2f2;border:1px solid #fecaca;border-radius:10px;font-size:13px;cursor:pointer;color:#dc2626}
+.badge{display:inline-block;font-size:11px;padding:2px 10px;border-radius:20px;margin-left:8px}
+.badge-green{background:#d1fae5;color:#065f46}
+.badge-blue{background:#dbeafe;color:#1e40af}
+.badge-yellow{background:#fef3c7;color:#92400e}
+@media(max-width:768px){.layout{flex-direction:column}.sidebar{width:100%;border-right:none;border-bottom:1px solid #e5e7eb}}
+.note{background:#fffbeb;border:1px solid #fde68a;border-radius:12px;padding:16px;margin-bottom:16px;font-size:13px;color:#92400e}
+</style>
+</head>
+<body>
+<div class="header">
+<div class="logo">🏥</div>
+<h1>abot-health</h1>
+<span class="sub">病历查看 · 设计原型</span>
+</div>
+<div class="layout">
+<div class="sidebar">
+<input class="search" placeholder="搜索病人姓名...">
+<div class="patient-card active">
+<div class="name">张三</div>
+<div class="meta">男 · 1985-03-12 · 41岁</div>
+<span class="tag">本人</span>
+</div>
+<div class="patient-card">
+<div class="name">李四</div>
+<div class="meta">女 · 1958-07-20 · 68岁</div>
+<span class="tag">母亲</span>
+</div>
+<div class="patient-card">
+<div class="name">王五</div>
+<div class="meta">男 · 1955-11-08 · 70岁</div>
+<span class="tag">父亲</span>
+</div>
+</div>
+<div class="main">
+<div class="note">📝 <b>设计说明 v2</b>：新增 4 个标签页——过敏史（严重程度红/黄标识）、慢性病（状态）、手术史、紧急联系人（首选标识）。数据从 health.abot.run API 拉取。</div>
+<div class="patient-head">
+<div class="avatar">张</div>
+<div>
+<h2>张三 <span class="badge badge-green">本人</span></h2>
+<div class="info">男 · 1985-03-12（41岁）· 备注：无药物过敏史</div>
+</div>
+</div>
+<div style="background:#fef2f2;border:1px solid #fecaca;border-radius:12px;padding:12px 16px;margin-bottom:16px;display:flex;align-items:center;gap:10px">
+<span style="font-size:20px">⚠️</span>
+<div style="font-size:13px"><b style="color:#dc2626">严重过敏：</b><span style="color:#991b1b">青霉素（全身皮疹、呼吸困难）</span></div>
+</div>
+<div class="tabs">
+<div class="tab active">就诊记录</div>
+<div class="tab">处方</div>
+<div class="tab">检查报告</div>
+<div class="tab">疫苗</div>
+<div class="tab">过敏史</div>
+<div class="tab">慢性病</div>
+<div class="tab">手术史</div>
+<div class="tab">紧急联系人</div>
+</div>
+<div class="section">
+<h3>📋 就诊记录 <span style="color:#9ca3af;font-weight:400;font-size:13px">共 3 次</span></h3>
+<div class="record">
+<div class="date">2026-09-26</div>
+<div class="title">咽炎就诊 <span class="badge badge-yellow">复诊</span></div>
+<div class="desc">主诉：喉咙痛 3 天，吞咽异样感。诊断：急性咽炎。医生：王医生（市人民医院）。</div>
+</div>
+<div class="record">
+<div class="date">2026-08-15</div>
+<div class="title">年度体检</div>
+<div class="desc">血常规、肝功能、血糖均正常。血压 120/80。建议：继续保持运动习惯。</div>
+</div>
+</div>
+<div class="section">
+<h3>💊 处方</h3>
+<div class="record">
+<div class="date">2026-09-26 开具</div>
+<div class="title">氨苄西林胶囊 0.25g <span class="badge badge-green">服用中</span></div>
+<div class="desc">用法：每天 3 次，每次 2 粒，饭后服。疗程 7 天。</div>
+</div>
+</div>
+<div class="section">
+<h3>🔬 检查报告</h3>
+<div class="record">
+<div class="date">2026-09-26</div>
+<div class="title">血常规 <span class="badge badge-blue">已出结果</span></div>
+<div class="desc">白细胞 8.5×10⁹/L（正常）。结论：轻度炎症。</div>
+<div class="files">
+<div class="file-thumb">报告图片</div>
+<div class="file-pdf">📄 血常规报告单.pdf</div>
+</div>
+</div>
+</div>
+<div class="section">
+<h3>💉 疫苗接种</h3>
+<div class="record">
+<div class="date">2026-09-26</div>
+<div class="title">狂犬疫苗 第 1 针 <span class="badge badge-green">已接种</span></div>
+<div class="desc">接种点：市疾控中心。下一针：2026-10-07。</div>
+</div>
+<div class="record" style="border-left-color:#f59e0b">
+<div class="date" style="color:#f59e0b">2026-10-07 待接种</div>
+<div class="title">狂犬疫苗 第 2 针 <span class="badge badge-yellow">待接种</span></div>
+<div class="desc">还有 5 天，请按时前往接种。</div>
+</div>
+</div>
+<div class="section">
+<h3>⚠️ 过敏史</h3>
+<div class="record" style="border-left-color:#ef4444">
+<div class="title">青霉素 <span class="badge" style="background:#fee2e2;color:#991b1b">严重</span></div>
+<div class="desc">反应：全身皮疹、呼吸困难。备注：就医时务必告知医生。</div>
+</div>
+<div class="record" style="border-left-color:#f59e0b">
+<div class="title">海鲜 <span class="badge badge-yellow">中度</span></div>
+<div class="desc">反应：皮肤瘙痒。避免食用虾蟹。</div>
+</div>
+</div>
+<div class="section">
+<h3>🏥 慢性病史</h3>
+<div class="record">
+<div class="date">2020-03 确诊</div>
+<div class="title">高血压 <span class="badge badge-blue">管理中</span></div>
+<div class="desc">目前服用氨氯地平控制，血压稳定在 130/85 左右。每 3 个月复查。</div>
+</div>
+</div>
+<div class="section">
+<h3>🔪 手术史</h3>
+<div class="record">
+<div class="date">2018-06-15</div>
+<div class="title">阑尾切除术</div>
+<div class="desc">医院：市人民医院。主刀：刘医生。术后恢复良好，无并发症。</div>
+</div>
+</div>
+<div class="section">
+<h3>📞 紧急联系人</h3>
+<div class="record">
+<div class="title">李四 <span class="badge badge-green">首选</span></div>
+<div class="desc">关系：配偶 · 电话：138-xxxx-xxxx</div>
+</div>
+<div class="record">
+<div class="title">王五</div>
+<div class="desc">关系：父亲 · 电话：139-xxxx-xxxx</div>
+</div>
+</div>
+</div>
+</div>
+</body>
+</html>
