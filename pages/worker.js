@@ -11,7 +11,7 @@ const INDEX_HTML = `<!DOCTYPE html>
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data: blob:; style-src 'self'; script-src 'self'; base-uri 'none'; form-action 'none'">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%2310b981'/%3E%3C/svg%3E">
   <title>病历查看</title>
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="style.css?v=43b668f">
 </head>
 <body>
   <header class="header">
@@ -41,7 +41,7 @@ const INDEX_HTML = `<!DOCTYPE html>
     </div>
   </div>
   <noscript><p class="noscript">需要启用 JavaScript 才能查看病历。</p></noscript>
-  <script src="app.js"></script>
+  <script src="app.js?v=43b668f"></script>
 </body>
 </html>
 `;
