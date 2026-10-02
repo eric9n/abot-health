@@ -9,44 +9,32 @@ const INDEX_HTML = `<!DOCTYPE html>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data: blob:; style-src 'self'; script-src 'self'; base-uri 'none'; form-action 'none'">
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%231f6b4a'/%3E%3C/svg%3E">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%2310b981'/%3E%3C/svg%3E">
   <title>病历查看</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <div class="app">
-    <header class="topbar">
-      <div class="brand">
-        <button type="button" class="menu-btn" id="menu-btn" aria-controls="sidebar" aria-expanded="false">病人</button>
-        <div>
-          <p class="kicker">健康档案</p>
-          <h1>病历查看</h1>
-        </div>
-      </div>
-      
-    </header>
+  <header class="header">
+    <div class="logo" aria-hidden="true">🏥</div>
+    <h1>abot-health</h1>
+    <span class="sub">病历查看</span>
+  </header>
 
-    <div class="layout">
-      <aside id="sidebar" class="sidebar">
-        <div class="side-head">
-          <h2>病人</h2>
-          <span id="patient-count" class="count"></span>
-        </div>
-        <input id="search" type="search" placeholder="搜索姓名、关系或备注" aria-label="搜索病人">
-        <div id="patient-list" class="patient-list" role="listbox" aria-label="病人列表"></div>
-      </aside>
-      <main id="main" class="main"></main>
-    </div>
+  <div class="layout">
+    <aside id="sidebar" class="sidebar">
+      <input id="search" class="search" type="search" placeholder="搜索病人姓名..." aria-label="搜索病人">
+      <div id="patient-list" class="patient-list" role="listbox" aria-label="病人列表"></div>
+    </aside>
+    <main id="main" class="main"></main>
   </div>
 
-  <div id="backdrop" class="backdrop" hidden></div>
   <div id="lightbox" class="lightbox" hidden>
     <div class="lightbox-card" role="dialog" aria-modal="true" aria-label="检查图片">
       <div class="lightbox-bar">
         <p id="lightbox-name"></p>
-        <div>
-          <button type="button" id="lightbox-download" class="ghost">下载</button>
-          <button type="button" id="lightbox-close">关闭</button>
+        <div class="lightbox-actions">
+          <button type="button" id="lightbox-download">下载</button>
+          <button type="button" id="lightbox-close" class="ghost">关闭</button>
         </div>
       </div>
       <img id="lightbox-img" alt="">
@@ -57,450 +45,368 @@ const INDEX_HTML = `<!DOCTYPE html>
 </body>
 </html>
 `;
-const STYLE_CSS = `:root {
-  --paper: #f3efe6;
-  --card: #fffdf8;
-  --ink: #1c2b24;
-  --muted: #5e6f66;
-  --line: #e3dccb;
-  --green: #1f6b4a;
-  --green-deep: #143d2c;
-  --green-soft: #e7f4ec;
-  --yellow: #fff4cc;
-  --yellow-line: #e2c15a;
-  --yellow-ink: #6b4a00;
-  --shadow: 0 10px 30px rgba(40, 48, 36, 0.06);
-  --radius: 18px;
-  color-scheme: light;
-}
-
-* { box-sizing: border-box; }
+const STYLE_CSS = `* { margin: 0; padding: 0; box-sizing: border-box; }
 
 body {
-  margin: 0;
-  min-height: 100vh;
-  color: var(--ink);
-  background:
-    radial-gradient(900px 420px at 0% -10%, #e5f3ea, transparent 55%),
-    var(--paper);
-  font: 15px/1.5 "Avenir Next", "PingFang SC", "Hiragino Sans GB", "Noto Sans SC", "Microsoft YaHei", sans-serif;
+  font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  background: #f5f7fa;
+  color: #1a1a1a;
 }
 
-button, input { font: inherit; color: inherit; }
+button { font-family: inherit; }
 
 button { cursor: pointer; }
 
-h1, h2, h3, p { margin: 0; }
-
-.app {
-  max-width: 1180px;
-  margin: 0 auto;
-  padding: 16px;
-}
-
-.topbar, .sidebar, .panel, .card, .empty {
-  background: var(--card);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow);
-}
-
-.topbar {
-  display: flex;
-  justify-content: space-between;
-  gap: 18px;
-  align-items: flex-end;
-  padding: 14px 16px;
-  margin-bottom: 16px;
-}
-
-.brand { display: flex; gap: 12px; align-items: center; }
-
-.kicker {
-  font-size: 12px;
-  letter-spacing: 0.12em;
-  color: var(--green);
-}
-
-h1 { font-size: 22px; letter-spacing: 0.02em; }
-
-.menu-btn { display: none; }
-
-.auth {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 12px;
-  align-items: flex-end;
-  justify-content: flex-end;
-}
-
-.auth label {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  font-size: 12px;
-  color: var(--muted);
-}
-
-.auth input, .sidebar input {
-  height: 38px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
+.header {
   background: #fff;
-  padding: 0 10px;
+  border-bottom: 1px solid #e5e7eb;
+  padding: 16px 24px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  position: sticky;
+  top: 0;
+  z-index: 10;
 }
 
-.auth input { min-width: 200px; }
-
-.token-row { display: flex; gap: 6px; }
-
-.token-row input { flex: 1; min-width: 160px; }
-
-.auth-actions { display: flex; gap: 6px; }
-
-button, .ghost {
-  border: 0;
+.header .logo {
+  width: 36px;
+  height: 36px;
+  background: linear-gradient(135deg, #10b981, #059669);
   border-radius: 10px;
-  height: 38px;
-  padding: 0 14px;
-  background: var(--green);
+  display: flex;
+  align-items: center;
+  justify-content: center;
   color: #fff;
+  font-size: 20px;
+  flex: none;
 }
 
-.ghost {
-  background: transparent;
-  color: var(--green-deep);
-  border: 1px solid var(--line);
-}
+.header h1 { font-size: 18px; font-weight: 600; }
 
-.auth-status {
-  flex-basis: 100%;
-  text-align: right;
-  font-size: 12px;
-  color: var(--muted);
+.header .sub {
+  color: #6b7280;
+  font-size: 13px;
+  margin-left: auto;
 }
-
-.auth-status.is-error { color: #8a3b12; }
 
 .layout {
-  display: grid;
-  grid-template-columns: 300px minmax(0, 1fr);
-  gap: 16px;
-  align-items: start;
+  display: flex;
+  max-width: 1400px;
+  margin: 0 auto;
+  min-height: calc(100vh - 69px);
 }
 
 .sidebar {
-  position: sticky;
-  top: 16px;
-  max-height: calc(100vh - 32px);
-  display: flex;
-  flex-direction: column;
-  padding: 14px;
-  min-height: 420px;
+  width: 300px;
+  background: #fff;
+  border-right: 1px solid #e5e7eb;
+  padding: 16px;
+  overflow-y: auto;
+  flex: none;
 }
 
-.side-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  margin-bottom: 10px;
+.search {
+  width: 100%;
+  padding: 10px 14px;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  font-size: 14px;
+  margin-bottom: 12px;
+  outline: none;
+  background: #fff;
 }
 
-h2 { font-size: 16px; }
+.search:focus { border-color: #10b981; }
 
-.count {
-  color: var(--muted);
-  font-size: 12px;
-}
-
-.sidebar input { width: 100%; margin-bottom: 10px; }
-
-.patient-list {
-  overflow: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding-right: 2px;
-}
-
-.patient {
+.patient-card {
+  display: block;
   width: 100%;
   text-align: left;
-  display: grid;
-  grid-template-columns: 40px minmax(0, 1fr) auto;
-  gap: 10px;
-  align-items: center;
-  padding: 8px;
+  padding: 14px;
+  border: 1px solid #e5e7eb;
   border-radius: 12px;
-  border: 1px solid transparent;
-  background: transparent;
+  margin-bottom: 10px;
+  cursor: pointer;
+  transition: all .15s;
+  background: #fff;
   color: inherit;
-  height: auto;
+  font-size: inherit;
 }
 
-.patient:hover { background: #f7f3ea; }
+.patient-card:hover { border-color: #10b981; }
 
-.patient.is-selected {
-  background: var(--green-soft);
-  border-color: #b7dcc8;
+.patient-card.active {
+  border-color: #10b981;
+  background: #ecfdf5;
+}
+
+.patient-card .name { font-weight: 600; font-size: 15px; }
+
+.patient-card .meta {
+  color: #6b7280;
+  font-size: 12px;
+  margin-top: 4px;
+}
+
+.patient-card .tag {
+  display: inline-block;
+  background: #eef2ff;
+  color: #4f46e5;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 20px;
+  margin-top: 6px;
+}
+
+.patient-card .tag-due {
+  background: #fef3c7;
+  color: #92400e;
+  margin-left: 6px;
+}
+
+.main {
+  flex: 1;
+  padding: 24px;
+  overflow-y: auto;
+  min-width: 0;
+}
+
+.patient-head {
+  background: #fff;
+  border-radius: 16px;
+  padding: 24px;
+  margin-bottom: 16px;
+  display: flex;
+  gap: 20px;
+  align-items: center;
 }
 
 .avatar {
-  width: 40px;
-  height: 40px;
+  width: 64px;
+  height: 64px;
+  background: linear-gradient(135deg, #a7f3d0, #6ee7b7);
   border-radius: 50%;
-  display: grid;
-  place-items: center;
-  background: var(--green-deep);
-  color: #fff;
-  font-weight: 650;
-}
-
-.patient-copy { display: flex; flex-direction: column; min-width: 0; }
-
-.patient-name {
-  font-weight: 650;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.patient-sub {
-  color: var(--muted);
-  font-size: 12px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.due-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--yellow-line);
-  box-shadow: 0 0 0 3px #fff4cc;
-}
-
-.main { min-width: 0; }
-
-.panel { padding: 18px; }
-
-.patient-head {
   display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  align-items: flex-start;
-  margin-bottom: 14px;
-}
-
-.patient-head h2 { font-size: 26px; }
-
-.subline { color: var(--muted); margin-top: 4px; }
-
-.notes { margin-top: 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
-
-.pill {
-  display: inline-flex;
   align-items: center;
-  height: 26px;
-  padding: 0 10px;
-  border-radius: 999px;
-  background: var(--green-soft);
-  color: var(--green-deep);
-  font-size: 12px;
+  justify-content: center;
+  font-size: 28px;
+  flex: none;
 }
 
-.pill-active { background: #e5f6df; color: #21631a; }
-.pill-finished, .pill-stopped, .pill-paused, .pill-muted {
-  background: #f1eee6;
-  color: var(--muted);
+.patient-head h2 { font-size: 20px; }
+
+.patient-head .info {
+  color: #6b7280;
+  font-size: 13px;
+  margin-top: 4px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
+
+.allergy-alert {
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 12px;
+  padding: 12px 16px;
+  margin-bottom: 16px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.allergy-alert .allergy-icon { font-size: 20px; }
+
+.allergy-alert .allergy-copy { font-size: 13px; }
+
+.allergy-alert b { color: #dc2626; }
+
+.allergy-alert .allergy-detail { color: #991b1b; }
 
 .tabs {
   display: flex;
-  gap: 6px;
-  overflow-x: auto;
-  margin-bottom: 14px;
-  padding-bottom: 2px;
+  gap: 8px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
 }
 
-.tabs button {
-  background: transparent;
-  color: var(--muted);
-  border: 1px solid transparent;
-  white-space: nowrap;
+.tab {
+  padding: 10px 20px;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  cursor: pointer;
+  font-size: 14px;
+  transition: all .15s;
+  color: #1a1a1a;
 }
 
-.tabs button[aria-selected="true"] {
-  background: var(--green-deep);
+.tab.active {
+  background: #10b981;
   color: #fff;
+  border-color: #10b981;
 }
 
-.badge {
-  display: inline-grid;
-  place-items: center;
-  min-width: 18px;
-  height: 18px;
+.section {
+  background: #fff;
+  border-radius: 16px;
+  padding: 20px;
+  margin-bottom: 16px;
+}
+
+.section h3 { font-size: 16px; margin-bottom: 14px; }
+
+.section h3 .count {
+  color: #9ca3af;
+  font-weight: 400;
+  font-size: 13px;
   margin-left: 6px;
-  padding: 0 5px;
-  border-radius: 999px;
-  background: var(--yellow);
-  color: var(--yellow-ink);
-  font-size: 11px;
 }
 
-.stack { display: flex; flex-direction: column; gap: 12px; }
-
-.card { padding: 14px 16px; box-shadow: none; }
-
-.card h3 { font-size: 16px; margin-bottom: 6px; }
-
-.meta-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-  gap: 8px 16px;
-  margin-top: 8px;
+.record {
+  border-left: 3px solid #10b981;
+  padding: 12px 16px;
+  margin-bottom: 12px;
+  background: #f9fafb;
+  border-radius: 0 10px 10px 0;
 }
 
-.meta-label {
-  display: block;
-  color: var(--muted);
-  font-size: 12px;
-}
+.record .date { color: #10b981; font-size: 12px; font-weight: 600; }
 
-.meta-value { overflow-wrap: anywhere; }
+.record .title { font-weight: 600; margin: 4px 0; }
 
-.visit { border-left: 4px solid var(--green); }
+.record .desc { color: #4b5563; font-size: 13px; line-height: 1.6; }
 
-.rx-head, .lab-head, .vax-head, .file-row, .lightbox-bar {
+.record.is-due { border-left-color: #f59e0b; }
+
+.record.is-due .date { color: #f59e0b; }
+
+.record.is-moderate { border-left-color: #f59e0b; }
+
+.record.is-severe { border-left-color: #ef4444; }
+
+.record .files {
   display: flex;
-  justify-content: space-between;
-  gap: 10px;
+  gap: 8px;
+  margin-top: 10px;
+  flex-wrap: wrap;
   align-items: center;
 }
 
-.due-banner {
-  background: var(--yellow);
-  border: 1px solid var(--yellow-line);
-  color: var(--yellow-ink);
-  border-radius: 14px;
-  padding: 12px 14px;
-}
-
-.due-banner h3 { margin-bottom: 6px; }
-
-.due-banner li { margin-left: 1.1em; }
-
-.vax.is-due {
-  background: #fff8e1;
-  border-color: var(--yellow-line);
-}
-
-.tag {
+.badge {
   display: inline-block;
+  font-size: 11px;
+  padding: 2px 10px;
+  border-radius: 20px;
   margin-left: 8px;
-  padding: 0 8px;
-  border-radius: 999px;
-  background: var(--yellow);
-  color: var(--yellow-ink);
-  font-size: 12px;
-  border: 1px solid var(--yellow-line);
 }
 
-.thumbs {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
-  gap: 10px;
-  margin-top: 12px;
-}
+.badge-green { background: #d1fae5; color: #065f46; }
+
+.badge-blue { background: #dbeafe; color: #1e40af; }
+
+.badge-yellow { background: #fef3c7; color: #92400e; }
+
+.badge-red { background: #fee2e2; color: #991b1b; }
+
+.badge-muted { background: #f3f4f6; color: #4b5563; }
+
+.tab .badge { vertical-align: middle; }
+
+.tab.active .badge-yellow,
+.tab.active .badge-red { color: #92400e; }
+
+.tab.active .badge-red { color: #991b1b; }
 
 .thumb {
-  height: auto;
+  width: 80px;
+  height: 80px;
   padding: 0;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: #f7f4ec;
+  border-radius: 10px;
+  border: 1px solid #e5e7eb;
+  background: #e5e7eb;
   overflow: hidden;
-  color: var(--muted);
-  min-height: 120px;
   display: flex;
-  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  color: #6b7280;
+  flex: none;
 }
 
 .thumb img {
-  width: 100%;
-  height: 120px;
+  width: 80px;
+  height: 80px;
   object-fit: cover;
   display: block;
-  background: #efeae0;
 }
 
-.thumb span, .file-name {
-  display: block;
-  padding: 6px 8px;
-  font-size: 12px;
+.file-pdf {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 14px;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 10px;
+  font-size: 13px;
+  cursor: pointer;
+  color: #dc2626;
+  height: auto;
   text-align: left;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.files { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
-
-.file-row {
-  padding: 8px 10px;
-  border: 1px dashed var(--line);
-  border-radius: 12px;
-}
-
-.file-row button, .linkish {
-  height: 32px;
-  background: var(--green);
 }
 
 .linkish {
   display: inline-flex;
   align-items: center;
-  color: var(--green-deep);
-  background: transparent;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 0 10px;
+  margin-top: 8px;
+  color: #1e40af;
+  font-size: 13px;
   text-decoration: none;
 }
 
-.empty, .error-banner {
-  padding: 28px 18px;
-  color: var(--muted);
+.note {
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  border-radius: 12px;
+  padding: 16px;
+  margin-bottom: 16px;
+  font-size: 13px;
+  color: #92400e;
+}
+
+.note ul { margin: 8px 0 0 1.1em; }
+
+.note li + li { margin-top: 4px; }
+
+.hint { color: #6b7280; font-size: 13px; }
+
+.empty {
+  background: #fff;
+  border-radius: 16px;
+  padding: 28px 20px;
+  color: #6b7280;
+  font-size: 14px;
 }
 
 .error-banner {
-  margin-bottom: 12px;
-  background: #fff5ef;
-  border: 1px solid #f0d2c4;
-  color: #8a3b12;
-  border-radius: 14px;
-  padding: 10px 12px;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 12px;
+  padding: 12px 16px;
+  margin-bottom: 16px;
+  color: #991b1b;
+  font-size: 13px;
 }
-
-.hint { color: var(--muted); font-size: 13px; }
-
-.backdrop {
-  position: fixed;
-  inset: 0;
-  background: rgba(20, 32, 26, 0.35);
-  z-index: 20;
-}
-
-.backdrop[hidden] { display: none; }
 
 .lightbox {
   position: fixed;
   inset: 0;
   z-index: 40;
-  background: rgba(16, 24, 20, 0.78);
-  display: grid;
-  place-items: center;
+  background: rgba(17, 24, 39, 0.72);
+  display: flex;
+  align-items: center;
+  justify-content: center;
   padding: 16px;
 }
 
@@ -510,76 +416,79 @@ h2 { font-size: 16px; }
   width: min(960px, 100%);
   max-height: calc(100vh - 32px);
   overflow: auto;
-  background: var(--card);
+  background: #fff;
   border-radius: 16px;
-  padding: 12px;
-}
-
-.lightbox-bar { margin-bottom: 10px; }
-
-.lightbox img {
-  width: 100%;
-  max-height: calc(100vh - 120px);
-  object-fit: contain;
-  background: #efeae0;
-  border-radius: 8px;
-}
-
-.noscript {
   padding: 16px;
 }
 
+.lightbox-bar {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.lightbox-bar p {
+  font-size: 14px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.lightbox-actions { display: flex; gap: 8px; flex: none; }
+
+#lightbox-download,
+.ghost,
+#lightbox-close {
+  height: auto;
+  padding: 8px 14px;
+  border-radius: 10px;
+  font-size: 14px;
+}
+
+#lightbox-download {
+  background: #10b981;
+  color: #fff;
+  border: 1px solid #10b981;
+}
+
+.ghost,
+#lightbox-close {
+  background: #fff;
+  color: #1a1a1a;
+  border: 1px solid #e5e7eb;
+}
+
+.lightbox img {
+  width: 100%;
+  max-height: calc(100vh - 140px);
+  object-fit: contain;
+  background: #f3f4f6;
+  border-radius: 10px;
+  display: block;
+}
+
+.noscript { padding: 16px; }
+
 :focus-visible {
-  outline: 2px solid var(--green);
+  outline: 2px solid #10b981;
   outline-offset: 2px;
 }
 
-@media (max-width: 860px) {
-  .app { padding: 10px; }
-  .topbar { flex-direction: column; align-items: stretch; }
-  .auth { justify-content: stretch; display: grid; }
-  .auth input, .token-row input { width: 100%; min-width: 0; }
-  .auth-status { text-align: left; }
-  .menu-btn { display: inline-flex; align-items: center; }
-  .layout { grid-template-columns: 1fr; }
+@media (max-width: 768px) {
+  .header { padding: 16px; }
+  .layout { flex-direction: column; }
   .sidebar {
-    position: fixed;
-    z-index: 30;
-    inset: 0 auto 0 0;
-    width: min(360px, 88vw);
-    height: 100%;
-    max-height: none;
-    border-radius: 0 18px 18px 0;
-    transform: translateX(-110%);
+    width: 100%;
+    border-right: none;
+    border-bottom: 1px solid #e5e7eb;
   }
-  .sidebar.is-open { transform: translateX(0); }
-  .patient-head { flex-direction: column; }
-  .patient-head h2 { font-size: 22px; }
+  .main { padding: 16px; }
+  .patient-head { padding: 16px; gap: 14px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .sidebar { transition: none; }
-}
-
-/* 新增：严重过敏警示条 */
-.allergy-alert {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  background: #fef2f2;
-  border: 1px solid #fecaca;
-  border-radius: 12px;
-  padding: 12px 16px;
-  margin-bottom: 16px;
-  font-size: 14px;
-  line-height: 1.6;
-}
-.allergy-alert strong { color: #dc2626; }
-
-/* 新增：红色徽标（严重过敏计数） */
-.badge-red {
-  background: #fee2e2;
-  color: #991b1b;
+  .patient-card, .tab { transition: none; }
 }
 `;
 const APP_JS = `const SELECT_KEY = "abot-health-selected";
@@ -681,7 +590,9 @@ function startOfToday() {
 function formatDate(value) {
   const day = parseDay(value);
   if (!day) return value ? String(value) : "";
-  return \`\${day.getFullYear()}年\${day.getMonth() + 1}月\${day.getDate()}日\`;
+  const month = String(day.getMonth() + 1).padStart(2, "0");
+  const date = String(day.getDate()).padStart(2, "0");
+  return \`\${day.getFullYear()}-\${month}-\${date}\`;
 }
 
 function ageFromDob(dob) {
@@ -691,7 +602,7 @@ function ageFromDob(dob) {
   let age = now.getFullYear() - birth.getFullYear();
   const month = now.getMonth() - birth.getMonth();
   if (month < 0 || (month === 0 && now.getDate() < birth.getDate())) age -= 1;
-  return age >= 0 ? \`\${age} 岁\` : "";
+  return age >= 0 ? \`\${age}岁\` : "";
 }
 
 function formatSize(size) {
@@ -744,23 +655,21 @@ function currentBrief() {
   return state.patients.find((patient) => patient.id === state.selectedId) || null;
 }
 
-function closeSidebar() {
-  $("sidebar").classList.remove("is-open");
-  $("backdrop").hidden = true;
-  $("menu-btn").setAttribute("aria-expanded", "false");
+function renderChrome() {}
+
+function patientMeta(patient) {
+  return [formatDate(patient.dob), ageFromDob(patient.dob)].filter(Boolean).join(" · ");
 }
 
-function openSidebar() {
-  $("sidebar").classList.add("is-open");
-  $("backdrop").hidden = false;
-  $("menu-btn").setAttribute("aria-expanded", "true");
-  $("search").focus();
-}
-
-function renderChrome() {
-  const current = currentBrief();
-  $("menu-btn").textContent = current ? current.name : "病人";
-  $("patient-count").textContent = state.patients.length ? \`\${state.patients.length} 人\` : "";
+function patientInfo(patient) {
+  const bits = [];
+  const dob = formatDate(patient.dob);
+  const age = ageFromDob(patient.dob);
+  if (dob && age) bits.push(\`\${dob}（\${age}）\`);
+  else if (dob) bits.push(dob);
+  else if (age) bits.push(age);
+  if (patient.notes) bits.push(\`备注：\${patient.notes}\`);
+  return bits.join(" · ");
 }
 
 function renderPatientList() {
@@ -772,23 +681,19 @@ function renderPatientList() {
     return;
   }
   for (const patient of rows) {
+    const meta = patientMeta(patient);
     const button = el("button", {
       type: "button",
-      class: "patient" + (patient.id === state.selectedId ? " is-selected" : ""),
+      class: "patient-card" + (patient.id === state.selectedId ? " active" : ""),
       role: "option",
       "aria-selected": patient.id === state.selectedId ? "true" : "false",
       onclick: () => selectPatient(patient.id),
     }, [
-      el("span", { class: "avatar", text: String(patient.name || "?").slice(0, 1) }),
-      el("span", { class: "patient-copy" }, [
-        el("span", { class: "patient-name", text: patient.name || "未命名" }),
-        el("span", {
-          class: "patient-sub",
-          text: [patient.relationship, formatDate(patient.dob)].filter(Boolean).join(" · ") || "未填写关系",
-        }),
-      ]),
+      el("div", { class: "name", text: patient.name || "未命名" }),
+      meta ? el("div", { class: "meta", text: meta }) : null,
+      patient.relationship ? el("span", { class: "tag", text: patient.relationship }) : null,
+      state.dueCounts[patient.id] ? el("span", { class: "tag tag-due", title: "有待接种疫苗", text: "待接种" }) : null,
     ]);
-    if (state.dueCounts[patient.id]) button.append(el("span", { class: "due-dot", title: "有待接种疫苗" }));
     list.append(button);
   }
 }
@@ -801,26 +706,30 @@ function errorBanner(text) {
   return text ? el("div", { class: "error-banner", text }) : null;
 }
 
-function meta(label, value) {
-  if (!value) return null;
-  return el("div", {}, [
-    el("span", { class: "meta-label", text: label }),
-    el("span", { class: "meta-value", text: value }),
-  ]);
+function sentence(parts) {
+  const text = parts.filter(Boolean).join("。");
+  return text ? el("p", { class: "desc", text: text + "。" }) : null;
+}
+
+function badge(text, kind) {
+  if (!text) return null;
+  return el("span", { class: \`badge badge-\${kind || "muted"}\`, text });
 }
 
 function renderVisits(detail) {
   if (!detail.visits.length) return el("p", { class: "hint", text: "还没有就诊记录" });
-  const stack = el("div", { class: "stack" });
+  const stack = el("div", {});
   for (const visit of detail.visits) {
-    stack.append(el("article", { class: "card visit" }, [
-      el("h3", { text: formatDate(visit.visit_date) || "未填日期" }),
-      el("div", { class: "meta-grid" }, [
-        meta("医院", visit.hospital),
-        meta("科室", visit.department),
-        meta("主诉", visit.complaint),
-        meta("诊断", visit.diagnosis),
-        meta("医嘱", visit.advice),
+    const title = visit.diagnosis || visit.complaint || "就诊";
+    stack.append(el("article", { class: "record" }, [
+      el("div", { class: "date", text: formatDate(visit.visit_date) || "未填日期" }),
+      el("div", { class: "title", text: title }),
+      sentence([
+        visit.complaint && visit.complaint !== title ? \`主诉：\${visit.complaint}\` : "",
+        visit.diagnosis && visit.diagnosis !== title ? \`诊断：\${visit.diagnosis}\` : "",
+        visit.hospital ? \`医院：\${visit.hospital}\` : "",
+        visit.department ? \`科室：\${visit.department}\` : "",
+        visit.advice ? \`医嘱：\${visit.advice}\` : "",
       ]),
     ]));
   }
@@ -832,20 +741,20 @@ function renderPrescriptions(detail) {
   const rank = { active: 0, paused: 1, stopped: 2, finished: 3 };
   const rows = detail.prescriptions.map((item, index) => ({ item, index }));
   rows.sort((a, b) => (rank[a.item.status] ?? 9) - (rank[b.item.status] ?? 9) || a.index - b.index);
-  const stack = el("div", { class: "stack" });
+  const stack = el("div", {});
+  const badgeKind = { active: "green", paused: "yellow", stopped: "red", finished: "muted" };
   for (const { item } of rows) {
     const status = item.status || "";
-    const statusClass = Object.prototype.hasOwnProperty.call(RX_LABEL, status) ? status : "muted";
-    stack.append(el("article", { class: "card" }, [
-      el("div", { class: "rx-head" }, [
-        el("h3", { text: item.drug_name || "未命名药品" }),
-        el("span", { class: \`pill pill-\${statusClass}\`, text: RX_LABEL[status] || status || "未知" }),
+    stack.append(el("article", { class: "record" }, [
+      item.start_date ? el("div", { class: "date", text: \`\${formatDate(item.start_date)} 开具\` }) : null,
+      el("div", { class: "title" }, [
+        item.drug_name || "未命名药品",
+        badge(RX_LABEL[status] || status || "未知", badgeKind[status] || "muted"),
       ]),
-      el("div", { class: "meta-grid" }, [
-        meta("规格", item.spec),
-        meta("用法", item.usage),
-        meta("开始", formatDate(item.start_date)),
-        meta("结束", formatDate(item.end_date)),
+      sentence([
+        item.spec ? \`规格：\${item.spec}\` : "",
+        item.usage ? \`用法：\${item.usage}\` : "",
+        item.end_date ? \`结束：\${formatDate(item.end_date)}\` : "",
       ]),
     ]));
   }
@@ -863,21 +772,23 @@ function renderFileBlock(patientId, file) {
       type: "button",
       class: "thumb",
       "data-thumb": file.id,
+      "aria-label": file.filename || "检查图片",
       onclick: () => openLightbox(patientId, file),
     }, [
-      el("span", { class: "thumb-wait", text: "加载中" }),
-      el("span", { text: file.filename || "图片" }),
+      el("span", { class: "thumb-wait", text: "报告图片" }),
     ]);
     return button;
   }
-  const label = kind === "pdf" ? "下载 PDF" : "下载";
-  return el("div", { class: "file-row" }, [
-    el("span", { class: "file-name", text: [file.filename || "附件", formatSize(file.size)].filter(Boolean).join(" · ") }),
-    el("button", {
-      type: "button",
-      text: label,
-      onclick: (event) => downloadFile(patientId, file, event.currentTarget),
-    }),
+  const name = file.filename || (kind === "pdf" ? "报告.pdf" : "附件");
+  const size = formatSize(file.size);
+  return el("button", {
+    type: "button",
+    class: "file-pdf",
+    title: size ? \`\${name} · \${size}\` : name,
+    onclick: (event) => downloadFile(patientId, file, event.currentTarget),
+  }, [
+    kind === "pdf" ? "📄" : "📎",
+    name,
   ]);
 }
 
@@ -887,15 +798,13 @@ function renderReportCard(patientId, report, files) {
   const link = /^https?:\\/\\//i.test(report.file_url || "")
     ? el("a", { class: "linkish", href: report.file_url, target: "_blank", rel: "noopener noreferrer", text: "打开链接" })
     : null;
-  return el("article", { class: "card" }, [
-    el("div", { class: "lab-head" }, [
-      el("h3", { text: report.report_type || "检查报告" }),
-      el("span", { class: "hint", text: formatDate(report.report_date) }),
-    ]),
-    report.summary ? el("p", { text: report.summary }) : null,
+  const attachments = [...images, ...docs];
+  return el("article", { class: "record" }, [
+    report.report_date ? el("div", { class: "date", text: formatDate(report.report_date) }) : null,
+    el("div", { class: "title", text: report.report_type || "检查报告" }),
+    report.summary ? el("p", { class: "desc", text: report.summary }) : null,
     link,
-    images.length ? el("div", { class: "thumbs" }, images.map((file) => renderFileBlock(patientId, file))) : null,
-    docs.length ? el("div", { class: "files" }, docs.map((file) => renderFileBlock(patientId, file))) : null,
+    attachments.length ? el("div", { class: "files" }, attachments.map((file) => renderFileBlock(patientId, file))) : null,
     !files.length && !link ? el("p", { class: "hint", text: "没有附件" }) : null,
   ]);
 }
@@ -918,28 +827,30 @@ function renderVaccines(detail) {
   if (!detail.vaccinations.length) return el("p", { class: "hint", text: "还没有疫苗记录" });
   const due = dueVaccines(detail.vaccinations);
   const banner = due.length
-    ? el("div", { class: "due-banner" }, [
-      el("h3", { text: due.some((row) => row.overdue) ? \`有 \${due.length} 项待接种，含已逾期\` : \`有 \${due.length} 项待接种\` }),
+    ? el("div", { class: "note" }, [
+      el("div", { text: due.some((row) => row.overdue) ? \`有 \${due.length} 项待接种，含已逾期\` : \`有 \${due.length} 项待接种\` }),
       el("ul", {}, due.map((row) => el("li", {
         text: [row.vaccine_name, doseText(row), formatDate(row.next_due_at), row.overdue ? "已逾期" : "待接种"].filter(Boolean).join(" · "),
       }))),
     ])
     : null;
   const rows = [...detail.vaccinations].sort((a, b) => String(b.vaccinated_at || b.next_due_at || "").localeCompare(String(a.vaccinated_at || a.next_due_at || "")));
-  const stack = el("div", { class: "stack" }, [banner]);
+  const stack = el("div", {}, [banner]);
   for (const row of rows) {
     const pending = due.find((item) => item.id === row.id);
-    stack.append(el("article", { class: "card vax" + (pending ? " is-due" : "") }, [
-      el("div", { class: "vax-head" }, [
-        el("h3", {}, [
-          row.vaccine_name || "未命名疫苗",
-          pending ? el("span", { class: "tag", text: pending.overdue ? "已逾期" : "待接种" }) : null,
-        ]),
-        doseText(row) ? el("span", { class: "hint", text: doseText(row) }) : null,
+    const when = pending ? formatDate(row.next_due_at) : formatDate(row.vaccinated_at);
+    const whenLabel = pending ? \`\${when} \${pending.overdue ? "已逾期" : "待接种"}\` : when;
+    stack.append(el("article", { class: "record" + (pending ? " is-due" : "") }, [
+      whenLabel ? el("div", { class: "date", text: whenLabel }) : null,
+      el("div", { class: "title" }, [
+        [row.vaccine_name || "未命名疫苗", doseText(row)].filter(Boolean).join(" "),
+        pending
+          ? badge(pending.overdue ? "已逾期" : "待接种", "yellow")
+          : (row.vaccinated_at ? badge("已接种", "green") : null),
       ]),
-      el("div", { class: "meta-grid" }, [
-        meta("接种日期", formatDate(row.vaccinated_at)),
-        meta("下次接种", formatDate(row.next_due_at)),
+      sentence([
+        pending && row.vaccinated_at ? \`接种日期：\${formatDate(row.vaccinated_at)}\` : "",
+        !pending && row.next_due_at ? \`下次接种：\${formatDate(row.next_due_at)}\` : "",
       ]),
     ]));
   }
@@ -950,23 +861,20 @@ function renderAllergies(detail) {
   if (!detail.allergies.length) return el("p", { class: "hint", text: "还没有过敏史记录" });
   const rank = { severe: 0, moderate: 1, mild: 2 };
   const rows = [...detail.allergies].sort((a, b) => (rank[a.severity] ?? 9) - (rank[b.severity] ?? 9));
-  const stack = el("div", { class: "stack" });
+  const stack = el("div", {});
   for (const item of rows) {
     const severe = item.severity === "severe";
-    stack.append(el("article", {
-      class: "card",
-      style: severe ? "border-left: 3px solid #ef4444;" : undefined,
-    }, [
-      el("div", { class: "rx-head" }, [
-        el("h3", { text: item.allergen || "未命名过敏原" }),
-        el("span", {
-          class: "pill " + (severe ? "pill-stopped" : item.severity === "moderate" ? "pill-paused" : "pill-muted"),
-          text: SEVERITY_LABEL[item.severity] || item.severity || "未知",
-        }),
+    const moderate = item.severity === "moderate";
+    const tone = severe ? " is-severe" : moderate ? " is-moderate" : "";
+    const kind = severe ? "red" : moderate ? "yellow" : "green";
+    stack.append(el("article", { class: "record" + tone }, [
+      el("div", { class: "title" }, [
+        item.allergen || "未命名过敏原",
+        badge(SEVERITY_LABEL[item.severity] || item.severity || "未知", kind),
       ]),
-      el("div", { class: "meta-grid" }, [
-        meta("反应症状", item.reaction),
-        meta("备注", item.notes),
+      sentence([
+        item.reaction ? \`反应：\${item.reaction}\` : "",
+        item.notes ? \`备注：\${item.notes}\` : "",
       ]),
     ]));
   }
@@ -975,17 +883,16 @@ function renderAllergies(detail) {
 
 function renderChronic(detail) {
   if (!detail.chronic_conditions.length) return el("p", { class: "hint", text: "还没有慢性病记录" });
-  const stack = el("div", { class: "stack" });
+  const stack = el("div", {});
+  const badgeKind = { active: "yellow", managed: "blue", cured: "green" };
   for (const item of detail.chronic_conditions) {
-    stack.append(el("article", { class: "card" }, [
-      el("div", { class: "rx-head" }, [
-        el("h3", { text: item.condition_name || "未命名疾病" }),
-        el("span", { class: "pill", text: CHRONIC_STATUS_LABEL[item.status] || item.status || "未知" }),
+    stack.append(el("article", { class: "record" }, [
+      item.diagnosed_date ? el("div", { class: "date", text: \`\${formatDate(item.diagnosed_date)} 确诊\` }) : null,
+      el("div", { class: "title" }, [
+        item.condition_name || "未命名疾病",
+        badge(CHRONIC_STATUS_LABEL[item.status] || item.status || "未知", badgeKind[item.status] || "muted"),
       ]),
-      el("div", { class: "meta-grid" }, [
-        meta("确诊日期", formatDate(item.diagnosed_date)),
-        meta("备注", item.notes),
-      ]),
+      item.notes ? el("p", { class: "desc", text: item.notes }) : null,
     ]));
   }
   return stack;
@@ -994,15 +901,15 @@ function renderChronic(detail) {
 function renderSurgeries(detail) {
   if (!detail.surgeries.length) return el("p", { class: "hint", text: "还没有手术记录" });
   const rows = [...detail.surgeries].sort((a, b) => String(b.surgery_date || "").localeCompare(String(a.surgery_date || "")));
-  const stack = el("div", { class: "stack" });
+  const stack = el("div", {});
   for (const item of rows) {
-    stack.append(el("article", { class: "card" }, [
-      el("h3", { text: item.surgery_name || "未命名手术" }),
-      el("div", { class: "meta-grid" }, [
-        meta("手术日期", formatDate(item.surgery_date)),
-        meta("医院", item.hospital),
-        meta("主刀医生", item.surgeon),
-        meta("备注", item.notes),
+    stack.append(el("article", { class: "record" }, [
+      item.surgery_date ? el("div", { class: "date", text: formatDate(item.surgery_date) }) : null,
+      el("div", { class: "title", text: item.surgery_name || "未命名手术" }),
+      sentence([
+        item.hospital ? \`医院：\${item.hospital}\` : "",
+        item.surgeon ? \`主刀：\${item.surgeon}\` : "",
+        item.notes ? \`备注：\${item.notes}\` : "",
       ]),
     ]));
   }
@@ -1012,17 +919,17 @@ function renderSurgeries(detail) {
 function renderContacts(detail) {
   if (!detail.emergency_contacts.length) return el("p", { class: "hint", text: "还没有紧急联系人" });
   const rows = [...detail.emergency_contacts].sort((a, b) => (b.is_primary || 0) - (a.is_primary || 0));
-  const stack = el("div", { class: "stack" });
+  const stack = el("div", {});
   for (const item of rows) {
-    stack.append(el("article", { class: "card" }, [
-      el("div", { class: "rx-head" }, [
-        el("h3", { text: item.name || "未命名" }),
-        item.is_primary ? el("span", { class: "pill pill-active", text: "首选" }) : null,
+    stack.append(el("article", { class: "record" }, [
+      el("div", { class: "title" }, [
+        item.name || "未命名",
+        item.is_primary ? badge("首选", "green") : null,
       ]),
-      el("div", { class: "meta-grid" }, [
-        meta("关系", item.relationship),
-        meta("电话", item.phone),
-      ]),
+      (() => {
+        const line = [item.relationship ? \`关系：\${item.relationship}\` : "", item.phone ? \`电话：\${item.phone}\` : ""].filter(Boolean).join(" · ");
+        return line ? el("p", { class: "desc", text: line }) : null;
+      })(),
     ]));
   }
   return stack;
@@ -1031,6 +938,17 @@ function renderContacts(detail) {
 function severeAllergies(detail) {
   return (detail.allergies || []).filter((a) => a.severity === "severe");
 }
+
+const SECTION_TITLE = {
+  visits: "📋 就诊记录",
+  prescriptions: "💊 处方",
+  labs: "🔬 检查报告",
+  vaccines: "💉 疫苗接种",
+  allergies: "⚠️ 过敏史",
+  chronic: "🏥 慢性病史",
+  surgeries: "🔪 手术史",
+  contacts: "📞 紧急联系人",
+};
 
 function renderMain() {
   const main = $("main");
@@ -1049,15 +967,17 @@ function renderMain() {
   }
   const brief = currentBrief() || {};
   const patient = (state.detail && state.detail.patient) || brief;
-  const headBits = [formatDate(patient.dob), ageFromDob(patient.dob)].filter(Boolean);
-  const panel = el("section", { class: "panel" }, [
-    el("header", { class: "patient-head" }, [
+  const info = patientInfo(patient);
+  const panel = el("div", {}, [
+    el("div", { class: "patient-head" }, [
+      el("div", { class: "avatar", "aria-hidden": "true", text: String(patient.name || "?").slice(0, 1) }),
       el("div", {}, [
-        el("h2", { text: patient.name || "未命名" }),
-        headBits.length ? el("p", { class: "subline", text: headBits.join(" · ") }) : null,
-        patient.notes ? el("p", { class: "notes", text: patient.notes }) : null,
+        el("h2", {}, [
+          patient.name || "未命名",
+          patient.relationship ? el("span", { class: "badge badge-green", text: patient.relationship }) : null,
+        ]),
+        info ? el("div", { class: "info", text: info }) : null,
       ]),
-      patient.relationship ? el("span", { class: "pill", text: patient.relationship }) : null,
     ]),
   ]);
   if (state.detailError) panel.append(errorBanner(state.detailError));
@@ -1073,12 +993,13 @@ function renderMain() {
   const severe = severeAllergies(state.detail);
   if (severe.length) {
     panel.append(el("div", { class: "allergy-alert" }, [
-      el("span", { text: "⚠️" }),
-      el("div", {}, [
-        el("strong", { text: "严重过敏：" }),
-        ...severe.map((a, i) => el("span", {
-          text: (i ? "、" : "") + a.allergen + (a.reaction ? \`（\${a.reaction}）\` : ""),
-        })),
+      el("span", { class: "allergy-icon", text: "⚠️" }),
+      el("div", { class: "allergy-copy" }, [
+        el("b", { text: "严重过敏：" }),
+        el("span", {
+          class: "allergy-detail",
+          text: severe.map((a) => a.allergen + (a.reaction ? \`（\${a.reaction}）\` : "")).join("、"),
+        }),
       ]),
     ]));
   }
@@ -1087,25 +1008,33 @@ function renderMain() {
     const button = el("button", {
       type: "button",
       role: "tab",
+      class: "tab" + (state.tab === tab.id ? " active" : ""),
       id: \`tab-\${tab.id}\`,
       "aria-selected": state.tab === tab.id ? "true" : "false",
       "aria-controls": "tab-panel",
       onclick: () => setTab(tab.id),
       text: tab.label,
     });
-    if (tab.id === "vaccines" && due.length) button.append(el("span", { class: "badge", text: String(due.length) }));
+    if (tab.id === "vaccines" && due.length) button.append(el("span", { class: "badge badge-yellow", text: String(due.length) }));
     if (tab.id === "allergies" && severe.length) button.append(el("span", { class: "badge badge-red", text: String(severe.length) }));
     return button;
   })));
-  const body = el("div", { id: "tab-panel", role: "tabpanel", "aria-labelledby": \`tab-\${state.tab}\` });
-  if (state.tab === "visits") body.append(renderVisits(state.detail));
-  else if (state.tab === "prescriptions") body.append(renderPrescriptions(state.detail));
-  else if (state.tab === "labs") body.append(renderLabs(state.detail));
-  else if (state.tab === "vaccines") body.append(renderVaccines(state.detail));
-  else if (state.tab === "allergies") body.append(renderAllergies(state.detail));
-  else if (state.tab === "chronic") body.append(renderChronic(state.detail));
-  else if (state.tab === "surgeries") body.append(renderSurgeries(state.detail));
-  else body.append(renderContacts(state.detail));
+  const content = state.tab === "visits" ? renderVisits(state.detail)
+    : state.tab === "prescriptions" ? renderPrescriptions(state.detail)
+    : state.tab === "labs" ? renderLabs(state.detail)
+    : state.tab === "vaccines" ? renderVaccines(state.detail)
+    : state.tab === "allergies" ? renderAllergies(state.detail)
+    : state.tab === "chronic" ? renderChronic(state.detail)
+    : state.tab === "surgeries" ? renderSurgeries(state.detail)
+    : renderContacts(state.detail);
+  const count = state.tab === "visits" && state.detail.visits.length ? \`共 \${state.detail.visits.length} 次\` : "";
+  const body = el("section", { class: "section", id: "tab-panel", role: "tabpanel", "aria-labelledby": \`tab-\${state.tab}\` }, [
+    el("h3", {}, [
+      SECTION_TITLE[state.tab] || "",
+      count ? el("span", { class: "count", text: count }) : null,
+    ]),
+    content,
+  ]);
   panel.append(body);
   main.append(panel);
   if (state.tab === "labs") loadThumbs(state.generation);
@@ -1123,7 +1052,6 @@ async function selectPatient(id) {
   state.detailError = "";
   state.loadingDetail = true;
   const gen = ++state.generation;
-  closeSidebar();
   renderChrome();
   renderPatientList();
   renderMain();
@@ -1244,9 +1172,7 @@ async function loadThumbs(gen) {
           alt: record.filename || "检查图片",
           src: \`data:\${record.mime};base64,\${record.content_base64}\`,
         });
-        const caption = node.querySelector("span:last-child");
         node.replaceChildren(img);
-        if (caption) node.append(caption);
       } catch {
         if (node.isConnected) {
           const wait = node.querySelector(".thumb-wait");
@@ -1280,11 +1206,6 @@ function closeLightbox() {
 
 function init() {
   $("search").addEventListener("input", renderPatientList);
-  $("menu-btn").addEventListener("click", () => {
-    if ($("sidebar").classList.contains("is-open")) closeSidebar();
-    else openSidebar();
-  });
-  $("backdrop").addEventListener("click", closeSidebar);
   $("lightbox-close").addEventListener("click", closeLightbox);
   $("lightbox").addEventListener("click", (event) => {
     if (event.target === $("lightbox")) closeLightbox();
@@ -1294,13 +1215,7 @@ function init() {
     downloadFile(state.lightboxFile.patientId, state.lightboxFile.file, event.currentTarget);
   });
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") {
-      closeLightbox();
-      closeSidebar();
-    }
-  });
-  window.addEventListener("resize", () => {
-    if (window.innerWidth > 860) closeSidebar();
+    if (event.key === "Escape") closeLightbox();
   });
   renderChrome();
   renderPatientList();
