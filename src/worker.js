@@ -1,6 +1,6 @@
 /**
  * abot-health — 健康数据服务
- * 病人、就诊、处方、检查报告、报告附件、疫苗。MCP 给 agent 用（经网关聚合）
+ * 病人、就诊、处方、检查报告、报告附件、疫苗、医疗保险。MCP 给 agent 用（经网关聚合）
  *
  * 安全约定：
  * - /mcp 只接受网关的 X-Internal-Token
@@ -20,6 +20,7 @@ const PATIENT_SCOPED_TABLES = {
   chronic_conditions: "chronic_condition_not_found",
   surgeries: "surgery_not_found",
   emergency_contacts: "emergency_contact_not_found",
+  insurance: "insurance_not_found",
 };
 
 function newId(prefix) {
@@ -189,6 +190,11 @@ async function ensureTables(env) {
       id TEXT PRIMARY KEY, patient_id TEXT NOT NULL, name TEXT NOT NULL,
       relationship TEXT, phone TEXT, is_primary INTEGER NOT NULL DEFAULT 0,
       created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')))`,
+    `CREATE TABLE IF NOT EXISTS insurance (
+      id TEXT PRIMARY KEY, patient_id TEXT NOT NULL, provider TEXT NOT NULL,
+      policy_number TEXT, plan_type TEXT, coverage_details TEXT,
+      valid_from TEXT, valid_to TEXT, contact_phone TEXT, notes TEXT,
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')))`,
   ];
   for (const sql of stmts) {
     await env.DB.prepare(sql).run();
@@ -350,6 +356,33 @@ const MCP_TOOLS = [
       is_primary: { type: "boolean", description: "是否首选" } },
       required: ["patient_id", "name"] } },
   { name: "delete_emergency_contact", description: "删除紧急联系人（仅限该病人的记录）",
+    inputSchema: { type: "object", properties: {
+      id: { type: "string" }, patient_id: { type: "string" } },
+      required: ["id", "patient_id"] } },
+  { name: "list_insurance", description: "列出某病人的医疗保险",
+    inputSchema: { type: "object", properties: { patient_id: { type: "string" } },
+      required: ["patient_id"] } },
+  { name: "add_insurance", description: "添加医疗保险",
+    inputSchema: { type: "object", properties: {
+      patient_id: { type: "string" },
+      provider: { type: "string", description: "保险公司，如平安健康、中国人寿" },
+      policy_number: { type: "string", description: "保单号" },
+      plan_type: { type: "string", description: "险种：社保/商保/新农合/城乡居民医保等" },
+      coverage_details: { type: "string", description: "保障内容，如住院报销比例、门诊额度" },
+      valid_from: { type: "string", description: "生效日期" },
+      valid_to: { type: "string", description: "到期日期" },
+      contact_phone: { type: "string", description: "保险公司客服电话" },
+      notes: { type: "string" } },
+      required: ["patient_id", "provider"] } },
+  { name: "update_insurance", description: "更新医疗保险（仅限该病人的记录）",
+    inputSchema: { type: "object", properties: {
+      id: { type: "string" }, patient_id: { type: "string" },
+      provider: { type: "string" }, policy_number: { type: "string" },
+      plan_type: { type: "string" }, coverage_details: { type: "string" },
+      valid_from: { type: "string" }, valid_to: { type: "string" },
+      contact_phone: { type: "string" }, notes: { type: "string" } },
+      required: ["id", "patient_id"] } },
+  { name: "delete_insurance", description: "删除医疗保险（仅限该病人的记录）",
     inputSchema: { type: "object", properties: {
       id: { type: "string" }, patient_id: { type: "string" } },
       required: ["id", "patient_id"] } },
@@ -705,6 +738,48 @@ async function callTool(name, args, env) {
     return { id };
   }
   if (name === "delete_emergency_contact") return deleteOwned(DB, "emergency_contacts", args);
+  if (name === "list_insurance") {
+    await requirePatient(DB, args.patient_id);
+    const r = await DB.prepare("SELECT * FROM insurance WHERE patient_id=? ORDER BY created_at DESC")
+      .bind(args.patient_id).all();
+    return { insurance: r.results };
+  }
+  if (name === "add_insurance") {
+    await requirePatient(DB, args.patient_id);
+    if (!args.provider || !String(args.provider).trim()) throw new InputError("provider_required");
+    const id = newId("ins");
+    await DB.prepare(`INSERT INTO insurance
+      (id,patient_id,provider,policy_number,plan_type,coverage_details,valid_from,valid_to,contact_phone,notes)
+      VALUES (?,?,?,?,?,?,?,?,?,?)`).bind(
+      id, args.patient_id, String(args.provider).trim(),
+      args.policy_number || null, args.plan_type || null, args.coverage_details || null,
+      args.valid_from || null, args.valid_to || null, args.contact_phone || null, args.notes || null).run();
+    return { id };
+  }
+  if (name === "update_insurance") {
+    if (!args.id) throw new InputError("id_required");
+    await requirePatient(DB, args.patient_id);
+    const sets = [], params = [];
+    if (args.provider !== undefined) {
+      if (!args.provider || !String(args.provider).trim()) throw new InputError("provider_required");
+      sets.push("provider=?"); params.push(String(args.provider).trim());
+    }
+    if (args.policy_number !== undefined) { sets.push("policy_number=?"); params.push(args.policy_number || null); }
+    if (args.plan_type !== undefined) { sets.push("plan_type=?"); params.push(args.plan_type || null); }
+    if (args.coverage_details !== undefined) { sets.push("coverage_details=?"); params.push(args.coverage_details || null); }
+    if (args.valid_from !== undefined) { sets.push("valid_from=?"); params.push(args.valid_from || null); }
+    if (args.valid_to !== undefined) { sets.push("valid_to=?"); params.push(args.valid_to || null); }
+    if (args.contact_phone !== undefined) { sets.push("contact_phone=?"); params.push(args.contact_phone || null); }
+    if (args.notes !== undefined) { sets.push("notes=?"); params.push(args.notes || null); }
+    if (!sets.length) throw new InputError("nothing_to_update");
+    params.push(args.id, args.patient_id);
+    const res = await DB.prepare(
+      `UPDATE insurance SET ${sets.join(",")} WHERE id=? AND patient_id=?`).bind(...params).run();
+    const changes = res && res.meta ? res.meta.changes : 0;
+    if (!changes) throw new InputError("insurance_not_found");
+    return { ok: true };
+  }
+  if (name === "delete_insurance") return deleteOwned(DB, "insurance", args);
   throw new Error(`unknown tool: ${name}`);
 }
 
