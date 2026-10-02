@@ -1,0 +1,13 @@
+// 本地开发与 e2e。不要拿这个配置部署：没有生产 D1，也没有密钥。
+{
+  "name": "abot-health",
+  "main": "src/worker.js",
+  "compatibility_date": "2025-09-01",
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "abot-health-e2e",
+      "database_id": "00000000-0000-0000-0000-000000000001"
+    }
+  ]
+}

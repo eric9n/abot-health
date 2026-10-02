@@ -1,0 +1,13 @@
+{
+  "name": "abot-health",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node test/basic.js && node test/e2e.js",
+    "test:unit": "node test/basic.js",
+    "test:e2e": "node test/e2e.js"
+  },
+  "devDependencies": {
+    "wrangler": "^4.146.0"
+  }
+}

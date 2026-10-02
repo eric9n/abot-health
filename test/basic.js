@@ -50,6 +50,14 @@ function fakeD1() {
         if (row[col] === null || row[col] === undefined) return false;
         continue;
       }
+      m = c.match(/^date\(([\w.]+)\)\s*>=\s*date\('now'\)$/i);
+      if (m) {
+        const col = m[1].includes(".") ? m[1].split(".")[1] : m[1];
+        const today = new Date().toISOString().slice(0, 10);
+        const val = row[col];
+        if (val === null || val === undefined || String(val).slice(0, 10) < today) return false;
+        continue;
+      }
       throw new Error("fakeD1: unsupported cond: " + c);
     }
     return true;
@@ -72,9 +80,10 @@ function fakeD1() {
     // upcoming_vaccinations 的 JOIN 查询单独处理
     if (/JOIN patients/i.test(q)) {
       const days = Number(params[0]) || 30;
-      const cutoff = new Date(Date.now() + days * 86400000);
+      const today = new Date().toISOString().slice(0, 10);
+      const cutoff = new Date(Date.now() + days * 86400000).toISOString().slice(0, 10);
       return tables.vaccinations
-        .filter((v) => v.next_due_at && new Date(v.next_due_at) <= cutoff)
+        .filter((v) => v.next_due_at && String(v.next_due_at).slice(0, 10) >= today && String(v.next_due_at).slice(0, 10) <= cutoff)
         .map((v) => {
           const p = tables.patients.find((x) => x.id === v.patient_id) || {};
           return { ...v, patient_name: p.name };
@@ -240,6 +249,16 @@ eq(sumBad.__error && sumBad.__error.message, "patient_not_found", "health_summar
 const up2 = await call(env, "upcoming_vaccinations", { days: 30 });
 eq(up2.vaccinations.length, 1, "upcoming_vaccinations finds due vaccine");
 eq(up2.vaccinations[0].patient_name, "本人", "upcoming_vaccinations joins patient name");
+await call(env, "add_vaccination", { patient_id: p.id, vaccine_name: "过期苗", next_due_at: "2020-01-01" });
+const upPast = await call(env, "upcoming_vaccinations", { days: 30 });
+eq(upPast.vaccinations.length, 1, "upcoming_vaccinations skips overdue");
+eq(upPast.vaccinations[0].vaccine_name, "狂犬疫苗", "upcoming keeps the future dose");
+
+const vP2 = await call(env, "add_visit", { patient_id: p2.id, visit_date: "2026-01-01" });
+const cross = await call(env, "add_prescription", { patient_id: p.id, visit_id: vP2.id, drug_name: "串方" });
+eq(cross.__error && cross.__error.message, "visit_not_found", "add_prescription other patient's visit");
+const missingVisit = await call(env, "add_prescription", { patient_id: p.id, visit_id: "visit_missing", drug_name: "无就诊" });
+eq(missingVisit.__error && missingVisit.__error.message, "visit_not_found", "add_prescription missing visit");
 
 // 错误信息不泄漏
 {
@@ -418,6 +437,29 @@ ok(src.includes("env.FILES"), "static: R2 binding FILES");
   eq(failed.__error && failed.__error.message, "internal_error", "d1 failure sanitized");
   ok(!(failed.__error && failed.__error.message || "").includes("secret"), "no secret in upload failure");
   eq(envFail.FILES.__objects.size, 0, "R2 object rolled back when metadata insert fails");
+}
+
+// 畸形 JSON 不能把异常栈返回给调用方
+{
+  const r = await worker.fetch(new Request("https://health.abot.run/mcp", {
+    method: "POST",
+    headers: { "content-type": "application/json", "X-Internal-Token": TOKEN, "X-Abot-Owner-Email": EMAIL },
+    body: "{",
+  }), env);
+  eq(r.status, 400, "invalid json -> 400");
+  const j = await r.json();
+  eq(j.error && j.error.code, -32700, "invalid json code");
+  eq(j.error && j.error.message, "parse_error", "invalid json message");
+  ok(!JSON.stringify(j).includes("SyntaxError"), "invalid json hides SyntaxError");
+  const r2 = await worker.fetch(new Request("https://health.abot.run/mcp", {
+    method: "POST",
+    headers: { "content-type": "application/json", "X-Internal-Token": TOKEN, "X-Abot-Owner-Email": EMAIL },
+    body: "null",
+  }), env);
+  const j2 = await r2.json();
+  eq(r2.status, 400, "json null -> 400");
+  eq(j2.error && j2.error.message, "invalid_request", "json null message");
+  ok(!JSON.stringify(j2).includes("TypeError"), "json null hides TypeError");
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

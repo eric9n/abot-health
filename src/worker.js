@@ -9,6 +9,8 @@
  * - 病人可以是任何人；relationship / notes 可选，只用于区分身份
  * - 病历与附件按 patient_id 隔离；写操作校验病人存在
  * - 附件存在 R2（binding FILES），元数据在 D1；仅 jpg/png/webp/pdf，单文件 10MB
+ * - 所有写操作校验 patient_id 存在；处方的 visit_id 必须属于同一病人
+ * - 非法 JSON / 非对象请求就地返回，不把运行时异常抛给网关
  */
 
 function newId(prefix) {
@@ -152,7 +154,12 @@ async function ensureTables(env) {
 // 每个 isolate 只建一次表，避免每请求重复 D1 写入
 let tablesReady = null;
 function ensureTablesCached(env) {
-  if (!tablesReady) tablesReady = ensureTables(env);
+  if (!tablesReady) {
+    tablesReady = ensureTables(env).catch((err) => {
+      tablesReady = null;
+      throw err;
+    });
+  }
   return tablesReady;
 }
 
@@ -232,6 +239,13 @@ async function requireOwnLabReport(DB, lab_report_id, patient_id) {
   const row = await DB.prepare("SELECT id, patient_id FROM lab_reports WHERE id=?").bind(lab_report_id).first();
   if (!row || row.patient_id !== patient_id) throw new InputError("lab_report_not_found");
   return row;
+
+// 缺失、别人的就诊，都报 visit_not_found，避免用存在性差异探测其他病人
+async function requireOwnedVisit(DB, visit_id, patient_id) {
+  if (!visit_id) return;
+  if (typeof visit_id !== "string") throw new InputError("visit_not_found");
+  const row = await DB.prepare("SELECT patient_id FROM visits WHERE id=?").bind(visit_id).first();
+  if (!row || row.patient_id !== patient_id) throw new InputError("visit_not_found");
 }
 
 async function callTool(name, args, env) {
@@ -268,6 +282,7 @@ async function callTool(name, args, env) {
   }
   if (name === "add_prescription") {
     await requirePatient(DB, args.patient_id);
+    await requireOwnedVisit(DB, args.visit_id, args.patient_id);
     if (!args.drug_name) throw new InputError("drug_name_required");
     const id = newId("rx");
     await DB.prepare(`INSERT INTO prescriptions (id,patient_id,visit_id,drug_name,spec,usage,start_date)
@@ -388,6 +403,7 @@ async function callTool(name, args, env) {
     const r = await DB.prepare(`SELECT v.*, p.name as patient_name FROM vaccinations v
       JOIN patients p ON v.patient_id = p.id
       WHERE v.next_due_at IS NOT NULL
+      AND date(v.next_due_at) >= date('now')
       AND date(v.next_due_at) <= date('now', '+' || ? || ' days')
       ORDER BY v.next_due_at`).bind(days).all();
     return { vaccinations: r.results };
@@ -399,7 +415,7 @@ async function callTool(name, args, env) {
       `SELECT drug_name, spec, usage FROM prescriptions WHERE status='active'`
       + (pid ? " AND patient_id=?" : "")).bind(...(pid ? [pid] : [])).all();
     const vax = await DB.prepare(
-      `SELECT vaccine_name, dose_number, total_doses, next_due_at FROM vaccinations WHERE next_due_at IS NOT NULL`
+      `SELECT vaccine_name, dose_number, total_doses, next_due_at FROM vaccinations WHERE next_due_at IS NOT NULL AND date(next_due_at) >= date('now')`
       + (pid ? " AND patient_id=?" : "") + ` ORDER BY next_due_at LIMIT 5`).bind(...(pid ? [pid] : [])).all();
     const visit = await DB.prepare(
       `SELECT visit_date, hospital, diagnosis FROM visits`
@@ -417,8 +433,13 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     if (url.pathname === "/health") {
-      await ensureTablesCached(env);
-      return Response.json({ ok: true, service: "abot-health" });
+      try {
+        await ensureTablesCached(env);
+        return Response.json({ ok: true, service: "abot-health" });
+      } catch (e) {
+        console.error("health check error:", e && e.stack ? e.stack : e);
+        return Response.json({ ok: false, error: "internal_error" }, { status: 500 });
+      }
     }
     // 内部鉴权：只接受网关的 X-Internal-Token，且必须携带网关注入的 owner 邮箱
     if (url.pathname === "/mcp") {
@@ -436,7 +457,18 @@ export default {
       }
     }
     if (url.pathname === "/mcp" && request.method === "POST") {
-      const msg = await request.json();
+      let msg;
+      try {
+        msg = await request.json();
+      } catch {
+        console.error("health mcp parse error");
+        return Response.json({ jsonrpc: "2.0", id: null,
+          error: { code: -32700, message: "parse_error" } }, { status: 400 });
+      }
+      if (!msg || typeof msg !== "object" || Array.isArray(msg)) {
+        return Response.json({ jsonrpc: "2.0", id: null,
+          error: { code: -32600, message: "invalid_request" } }, { status: 400 });
+      }
       const id = msg.id ?? null;
       try {
         if (msg.method === "initialize") {
