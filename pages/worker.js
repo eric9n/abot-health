@@ -668,7 +668,7 @@ function patientInfo(patient) {
   if (dob && age) bits.push(\`\${dob}（\${age}）\`);
   else if (dob) bits.push(dob);
   else if (age) bits.push(age);
-  if (patient.notes) bits.push(\`备注：\${patient.notes}\`);
+  // 不显示 notes：健康数据已在专表（过敏/慢性病/手术等），notes 含非健康信息（邮箱/法律名/签证等）
   return bits.join(" · ");
 }
 
