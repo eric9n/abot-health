@@ -195,6 +195,13 @@ export default {
       await ensureTables(env);
       return Response.json({ ok: true, service: "abot-health" });
     }
+    // 内部鉴权：只接受网关的 X-Internal-Token
+    if (url.pathname === "/mcp") {
+      const it = request.headers.get("X-Internal-Token") || "";
+      if (!env.INTERNAL_TOKEN || it !== env.INTERNAL_TOKEN) {
+        return Response.json({ error: "unauthorized" }, { status: 401 });
+      }
+    }
     if (url.pathname === "/mcp" && request.method === "POST") {
       const msg = await request.json();
       const id = msg.id ?? null;
@@ -216,9 +223,10 @@ export default {
             return Response.json({ jsonrpc: "2.0", id,
               error: { code: -32601, message: `unknown tool: ${name}` } });
           }
-          const result = await callTool(name, args || {}, env);
+          const result = await callTool(name, args, env);
+          const text = JSON.stringify(result);
           return Response.json({ jsonrpc: "2.0", id, result: {
-            content: [{ type: "text", text: JSON.stringify(result) }] } } });
+            content: [{ type: "text", text: text }] } });
         }
         return Response.json({ jsonrpc: "2.0", id,
           error: { code: -32601, message: "Method not found" } });
