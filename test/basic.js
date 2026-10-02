@@ -77,6 +77,14 @@ function fakeD1() {
 
   function doSelect(sql, params) {
     const q = norm(sql);
+    // PRAGMA table_info：模拟老库（没有 phone/email 列），让迁移逻辑走 ALTER
+    let pm = q.match(/^PRAGMA table_info\((\w+)\)$/i);
+    if (pm) {
+      const base = {
+        patients: ["id", "name", "relationship", "dob", "notes", "created_at"],
+      }[pm[1]] || [];
+      return base.map((name) => ({ name }));
+    }
     // upcoming_vaccinations 的 JOIN 查询单独处理
     if (/JOIN patients/i.test(q)) {
       const days = Number(params[0]) || 30;
@@ -112,6 +120,7 @@ function fakeD1() {
       const stmt = (params) => ({
         async run() {
           if (/^CREATE TABLE/i.test(norm(sql))) return {};
+          if (/^ALTER TABLE/i.test(norm(sql))) return {};
           let m = norm(sql).match(/^INSERT INTO (\w+) \(([^)]+)\) VALUES \(([^)]+)\)$/i);
           if (m) {
             const cols = m[2].split(",").map((s) => s.trim());
@@ -301,6 +310,26 @@ ok(src.includes("env.FILES"), "static: R2 binding FILES");
   const onlyFriend = await call(env, "list_visits", { patient_id: friend.id });
   eq(onlyFriend.visits.length, 1, "visits stay isolated by patient_id");
   ok(onlyFriend.visits.every((row) => row.patient_id === friend.id), "listed visits belong to that patient");
+}
+
+// ---------- 病人联系方式（phone/email）----------
+{
+  const c = await call(env, "add_patient", { name: "联系人", phone: "13800001111", email: "a@b.com" });
+  ok(c.id.startsWith("pat_"), "add_patient with phone/email");
+  const listed = await call(env, "list_patients", {});
+  const row = listed.patients.find((x) => x.id === c.id);
+  eq(row.phone, "13800001111", "phone stored and listed");
+  eq(row.email, "a@b.com", "email stored and listed");
+  const up = await call(env, "update_patient", { patient_id: c.id, phone: "13900002222" });
+  eq(up.ok, true, "update_patient ok");
+  const listed2 = await call(env, "list_patients", {});
+  const row2 = listed2.patients.find((x) => x.id === c.id);
+  eq(row2.phone, "13900002222", "phone updated");
+  eq(row2.email, "a@b.com", "email unchanged after partial update");
+  const upBad = await call(env, "update_patient", { patient_id: "pat_nope", phone: "1" });
+  eq(upBad.__error && upBad.__error.message, "patient_not_found", "update_patient bogus id -> patient_not_found");
+  const upEmpty = await call(env, "update_patient", { patient_id: c.id });
+  eq(upEmpty.__error && upEmpty.__error.message, "nothing_to_update", "update_patient no fields -> nothing_to_update");
 }
 
 // ---------- 检查报告附件：上传 / 下载 / 隔离 ----------

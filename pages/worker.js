@@ -668,6 +668,8 @@ function patientInfo(patient) {
   if (dob && age) bits.push(\`\${dob}（\${age}）\`);
   else if (dob) bits.push(dob);
   else if (age) bits.push(age);
+  if (patient.phone) bits.push(\`电话 \${patient.phone}\`);
+  if (patient.email) bits.push(patient.email);
   // 不显示 notes：健康数据已在专表（过敏/慢性病/手术等），notes 含非健康信息（邮箱/法律名/签证等）
   return bits.join(" · ");
 }
@@ -1239,7 +1241,7 @@ function badRequest(msg) {
 
 async function getPatients(env) {
   const r = await env.DB.prepare(
-    "SELECT id, name, relationship, dob, notes, created_at FROM patients ORDER BY created_at DESC"
+    "SELECT id, name, relationship, dob, phone, email, notes, created_at FROM patients ORDER BY created_at DESC"
   ).all();
   return { patients: r.results || [] };
 }
@@ -1247,7 +1249,7 @@ async function getPatients(env) {
 async function getPatient(env, id) {
   if (!id) return null;
   const patient = await env.DB.prepare(
-    "SELECT id, name, relationship, dob, notes, created_at FROM patients WHERE id=?"
+    "SELECT id, name, relationship, dob, phone, email, notes, created_at FROM patients WHERE id=?"
   ).bind(id).first();
   if (!patient) return null;
   const q = (sql) => env.DB.prepare(sql).bind(id).all().then((r) => r.results || []);
