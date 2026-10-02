@@ -1420,13 +1420,13 @@ export default {
 
     // Static
     if (path === "/" || path === "/index.html") {
-      return new Response(INDEX_HTML, { headers: { "content-type": "text/html; charset=utf-8" } });
+      return new Response(INDEX_HTML, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
     }
     if (path === "/style.css") {
-      return new Response(STYLE_CSS, { headers: { "content-type": "text/css; charset=utf-8" } });
+      return new Response(STYLE_CSS, { headers: { "content-type": "text/css; charset=utf-8", "cache-control": "no-store" } });
     }
     if (path === "/app.js") {
-      return new Response(APP_JS, { headers: { "content-type": "application/javascript; charset=utf-8" } });
+      return new Response(APP_JS, { headers: { "content-type": "application/javascript; charset=utf-8", "cache-control": "no-store" } });
     }
     return new Response("Not found", { status: 404 });
   },
