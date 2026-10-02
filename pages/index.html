@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src https://health.abot.run; img-src 'self' data: blob:; style-src 'self'; script-src 'self'; base-uri 'none'; form-action 'none'">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%231f6b4a'/%3E%3C/svg%3E">
+  <title>病历查看</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <button type="button" class="menu-btn" id="menu-btn" aria-controls="sidebar" aria-expanded="false">病人</button>
+        <div>
+          <p class="kicker">健康档案</p>
+          <h1>病历查看</h1>
+        </div>
+      </div>
+      <form id="auth-form" class="auth" autocomplete="off">
+        <label>访问令牌
+          <span class="token-row">
+            <input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="内部访问令牌" title="请求头 X-Internal-Token">
+            <button type="button" id="reveal" class="ghost">显示</button>
+          </span>
+        </label>
+        <label>账号邮箱
+          <input id="email" type="email" autocomplete="email" placeholder="账号邮箱" title="请求头 X-Abot-Owner-Email">
+        </label>
+        <div class="auth-actions">
+          <button type="submit" id="connect">连接</button>
+          <button type="button" id="clear-auth" class="ghost">清除</button>
+        </div>
+        <p id="auth-status" class="auth-status" role="status">令牌和邮箱只保存在这台浏览器。</p>
+      </form>
+    </header>
+
+    <div class="layout">
+      <aside id="sidebar" class="sidebar">
+        <div class="side-head">
+          <h2>病人</h2>
+          <span id="patient-count" class="count"></span>
+        </div>
+        <input id="search" type="search" placeholder="搜索姓名、关系或备注" aria-label="搜索病人">
+        <div id="patient-list" class="patient-list" role="listbox" aria-label="病人列表"></div>
+      </aside>
+      <main id="main" class="main"></main>
+    </div>
+  </div>
+
+  <div id="backdrop" class="backdrop" hidden></div>
+  <div id="lightbox" class="lightbox" hidden>
+    <div class="lightbox-card" role="dialog" aria-modal="true" aria-label="检查图片">
+      <div class="lightbox-bar">
+        <p id="lightbox-name"></p>
+        <div>
+          <button type="button" id="lightbox-download" class="ghost">下载</button>
+          <button type="button" id="lightbox-close">关闭</button>
+        </div>
+      </div>
+      <img id="lightbox-img" alt="">
+    </div>
+  </div>
+  <noscript><p class="noscript">需要启用 JavaScript 才能查看病历。</p></noscript>
+  <script src="app.js"></script>
+</body>
+</html>

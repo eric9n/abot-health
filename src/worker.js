@@ -620,31 +620,45 @@ async function callTool(name, args, env) {
   throw new Error(`unknown tool: ${name}`);
 }
 
+const CORS_HEADERS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type, X-Internal-Token, X-Abot-Owner-Email",
+  "Access-Control-Max-Age": "86400",
+};
+
+function corsJson(body, status = 200) {
+  return Response.json(body, { status, headers: CORS_HEADERS });
+}
+
 export default {
   async fetch(request, env) {
+    if (request.method === "OPTIONS") {
+      return new Response(null, { status: 204, headers: CORS_HEADERS });
+    }
     const url = new URL(request.url);
     if (url.pathname === "/health") {
       try {
         await ensureTablesCached(env);
-        return Response.json({ ok: true, service: "abot-health" });
+        return corsJson({ ok: true, service: "abot-health" });
       } catch (e) {
         console.error("health check error:", e && e.stack ? e.stack : e);
-        return Response.json({ ok: false, error: "internal_error" }, { status: 500 });
+        return corsJson({ ok: false, error: "internal_error" }, 500);
       }
     }
     // 内部鉴权：只接受网关的 X-Internal-Token，且必须携带网关注入的 owner 邮箱
     if (url.pathname === "/mcp") {
       const it = request.headers.get("X-Internal-Token") || "";
       if (!env.INTERNAL_TOKEN || !safeEqual(it, env.INTERNAL_TOKEN)) {
-        return Response.json({ error: "unauthorized" }, { status: 401 });
+        return corsJson({ error: "unauthorized" }, 401);
       }
       const ownerEmail = request.headers.get("X-Abot-Owner-Email") || "";
       if (!ownerEmail) {
-        return Response.json({ error: "owner email required" }, { status: 401 });
+        return corsJson({ error: "owner email required" }, 401);
       }
       // 部署身份校验：配置了 OWNER_EMAIL 时必须匹配，防止直连绕过网关身份
       if (env.OWNER_EMAIL && ownerEmail !== env.OWNER_EMAIL) {
-        return Response.json({ error: "unauthorized" }, { status: 401 });
+        return corsJson({ error: "unauthorized" }, 401);
       }
     }
     if (url.pathname === "/mcp" && request.method === "POST") {
@@ -668,7 +682,7 @@ export default {
             serverInfo: { name: "abot-health-mcp", version: "1.1.0" } } });
         }
         if (msg.method === "tools/list") {
-          return Response.json({ jsonrpc: "2.0", id, result: { tools: MCP_TOOLS } });
+          return corsJson({ jsonrpc: "2.0", id, result: { tools: MCP_TOOLS } });
         }
         if (msg.method === "tools/call") {
           const params = msg.params || {};
@@ -697,6 +711,6 @@ export default {
           error: { code: -32603, message: "internal_error" } });
       }
     }
-    return Response.json({ error: "not found" }, { status: 404 });
+    return corsJson({ error: "not found" }, 404);
   },
 };
