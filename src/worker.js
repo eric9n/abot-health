@@ -239,6 +239,7 @@ async function requireOwnLabReport(DB, lab_report_id, patient_id) {
   const row = await DB.prepare("SELECT id, patient_id FROM lab_reports WHERE id=?").bind(lab_report_id).first();
   if (!row || row.patient_id !== patient_id) throw new InputError("lab_report_not_found");
   return row;
+}
 
 // 缺失、别人的就诊，都报 visit_not_found，避免用存在性差异探测其他病人
 async function requireOwnedVisit(DB, visit_id, patient_id) {
