@@ -208,7 +208,9 @@ export default {
           return Response.json({ jsonrpc: "2.0", id, result: { tools: MCP_TOOLS } });
         }
         if (msg.method === "tools/call") {
-          const { name, arguments: args } = msg.params || {};
+          const params = msg.params || {};
+          const name = params.name;
+          const args = params.arguments || {};
           const known = MCP_TOOLS.some((t) => t.name === name);
           if (!known) {
             return Response.json({ jsonrpc: "2.0", id,
