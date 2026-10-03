@@ -3,8 +3,8 @@
  * 病人、就诊、处方、检查报告、报告附件、疫苗、医疗保险。MCP 给 agent 用（经网关聚合）
  *
  * 安全约定：
- * - /mcp 带了 X-Internal-Token（自定义域名直连）则必须与 INTERNAL_TOKEN 一致；
- *   没带该头视为网关经 Service Bindings 的可信调用，直接放行
+ * - /mcp 不校验 X-Internal-Token。公网入口（自定义域名、workers.dev）会下掉，
+ *   只接受网关经 Service Bindings 的调用
  * - 必须携带 X-Abot-Owner-Email（网关从 OAuth token 注入）；
  *   若配置了 OWNER_EMAIL，则必须与之匹配
  * - 病人可以是任何人；relationship / notes 可选，只用于区分身份
@@ -29,15 +29,6 @@ function newId(prefix) {
   crypto.getRandomValues(bytes);
   const r = Array.from(bytes, (b) => b.toString(36).padStart(2, "0")).join("");
   return `${prefix}_${Date.now().toString(36)}${r}`;
-}
-
-// 恒定时间比较，防时序攻击
-function safeEqual(a, b) {
-  if (typeof a !== "string" || typeof b !== "string") return false;
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  return diff === 0;
 }
 
 // 客户端参数错误 → JSON-RPC -32602，message 可安全返回
@@ -787,7 +778,7 @@ async function callTool(name, args, env) {
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, X-Internal-Token, X-Abot-Owner-Email",
+  "Access-Control-Allow-Headers": "Content-Type, X-Abot-Owner-Email",
   "Access-Control-Max-Age": "86400",
 };
 
@@ -810,13 +801,8 @@ export default {
         return corsJson({ ok: false, error: "internal_error" }, 500);
       }
     }
-    // 内部鉴权：带了 X-Internal-Token 就必须校验通过；没带则视为 Service Bindings 可信调用。
-    // 两种路径都必须携带网关注入的 owner 邮箱。
+    // 公网入口已关闭，不再校验 X-Internal-Token。必须携带网关注入的 owner 邮箱。
     if (url.pathname === "/mcp") {
-      const it = request.headers.get("X-Internal-Token");
-      if (it !== null && (!env.INTERNAL_TOKEN || !safeEqual(it, env.INTERNAL_TOKEN))) {
-        return corsJson({ error: "unauthorized" }, 401);
-      }
       const ownerEmail = request.headers.get("X-Abot-Owner-Email") || "";
       if (!ownerEmail) {
         return corsJson({ error: "owner email required" }, 401);
