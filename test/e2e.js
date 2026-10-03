@@ -101,9 +101,17 @@ async function main() {
     noLeak(missing.text, "404 body");
 
     const noTok = await rpc({ jsonrpc: "2.0", id: 1, method: "tools/list" }, authHeaders({}, { token: false }));
-    eq(noTok.status, 401, "no X-Internal-Token -> 401");
-    eq(noTok.json && noTok.json.error, "unauthorized", "no token message");
+    eq(noTok.status, 200, "no X-Internal-Token (service binding) + email -> 200");
+    ok(noTok.json && noTok.json.result && Array.isArray(noTok.json.result.tools), "no token still lists tools");
     noLeak(noTok.text, "no token body");
+
+    const noTokNoEmail = await rpc(
+      { jsonrpc: "2.0", id: 1, method: "tools/list" },
+      { "content-type": "application/json" },
+    );
+    eq(noTokNoEmail.status, 401, "no token and no X-Abot-Owner-Email -> 401");
+    eq(noTokNoEmail.json && noTokNoEmail.json.error, "owner email required", "binding path still requires email");
+    noLeak(noTokNoEmail.text, "binding missing email body");
 
     const badTok = await rpc(
       { jsonrpc: "2.0", id: 1, method: "tools/list" },

@@ -3,7 +3,8 @@
  * 病人、就诊、处方、检查报告、报告附件、疫苗、医疗保险。MCP 给 agent 用（经网关聚合）
  *
  * 安全约定：
- * - /mcp 只接受网关的 X-Internal-Token
+ * - /mcp 带了 X-Internal-Token（自定义域名直连）则必须与 INTERNAL_TOKEN 一致；
+ *   没带该头视为网关经 Service Bindings 的可信调用，直接放行
  * - 必须携带 X-Abot-Owner-Email（网关从 OAuth token 注入）；
  *   若配置了 OWNER_EMAIL，则必须与之匹配
  * - 病人可以是任何人；relationship / notes 可选，只用于区分身份
@@ -809,10 +810,11 @@ export default {
         return corsJson({ ok: false, error: "internal_error" }, 500);
       }
     }
-    // 内部鉴权：只接受网关的 X-Internal-Token，且必须携带网关注入的 owner 邮箱
+    // 内部鉴权：带了 X-Internal-Token 就必须校验通过；没带则视为 Service Bindings 可信调用。
+    // 两种路径都必须携带网关注入的 owner 邮箱。
     if (url.pathname === "/mcp") {
-      const it = request.headers.get("X-Internal-Token") || "";
-      if (!env.INTERNAL_TOKEN || !safeEqual(it, env.INTERNAL_TOKEN)) {
+      const it = request.headers.get("X-Internal-Token");
+      if (it !== null && (!env.INTERNAL_TOKEN || !safeEqual(it, env.INTERNAL_TOKEN))) {
         return corsJson({ error: "unauthorized" }, 401);
       }
       const ownerEmail = request.headers.get("X-Abot-Owner-Email") || "";

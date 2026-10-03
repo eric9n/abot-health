@@ -216,8 +216,23 @@ const env = mcpEnv();
 {
   const r1 = await postRpc(env, { jsonrpc: "2.0", id: 1, method: "tools/list" }, { "X-Internal-Token": "wrong" });
   eq(r1.status, 401, "auth: wrong internal token -> 401");
+  const rEmptyTok = await postRpc(env, { jsonrpc: "2.0", id: 1, method: "tools/list" }, { "X-Internal-Token": "" });
+  eq(rEmptyTok.status, 401, "auth: empty internal token -> 401");
   const r2 = await postRpc(env, { jsonrpc: "2.0", id: 1, method: "tools/list" }, { "X-Abot-Owner-Email": "" });
   eq(r2.status, 401, "auth: missing owner email -> 401");
+  const binding = await worker.fetch(new Request("https://health.abot.run/mcp", {
+    method: "POST",
+    headers: { "content-type": "application/json", "X-Abot-Owner-Email": EMAIL },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+  }), env);
+  eq(binding.status, 200, "auth: no token (service binding) + email -> 200");
+  const bindingNoEmail = await worker.fetch(new Request("https://health.abot.run/mcp", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+  }), env);
+  eq(bindingNoEmail.status, 401, "auth: no token and no email -> 401");
+  eq((await bindingNoEmail.json()).error, "owner email required", "auth: binding path still requires email");
   const r3 = await postRpc(env, { jsonrpc: "2.0", id: 1, method: "tools/list" });
   eq(r3.status, 200, "auth: valid token + email -> 200");
   const tools = (await r3.json()).result.tools;
