@@ -16,10 +16,12 @@ ok(!src.includes("Math.random"), "static: no Math.random (predictable ids)");
 ok(src.includes("crypto.getRandomValues"), "static: crypto.getRandomValues ids");
 ok(!/\$\{args/.test(src), "static: no ${args...} SQL interpolation");
 ok(src.includes("X-Abot-Owner-Email"), "static: owner email enforced");
+ok(!src.includes("INTERNAL_TOKEN"), "static: INTERNAL_TOKEN removed");
+ok(!src.includes('headers.get("X-Internal-Token")'), "static: token header not read");
+ok(!src.includes("safeEqual"), "static: token compare removed");
 ok(src.includes('"internal_error"'), "static: sanitized internal error");
 ok(!/message: e\.message/.test(src.replace(/e instanceof InputError[\s\S]{0,120}/, "")),
   "static: no raw e.message leak in generic catch");
-ok(src.includes("safeEqual"), "static: constant-time token compare");
 
 // ---------- 内存 fake D1 ----------
 function fakeD1() {
@@ -166,7 +168,6 @@ function fakeD1() {
 }
 
 // ---------- 功能测试 ----------
-const TOKEN = "internal-test-token";
 const EMAIL = "eric@abot.run";
 function fakeR2() {
   const objects = new Map();
@@ -191,10 +192,10 @@ function fakeR2() {
   };
 }
 function mcpEnv(extra = {}) {
-  return { DB: fakeD1(), FILES: fakeR2(), INTERNAL_TOKEN: TOKEN, ...extra };
+  return { DB: fakeD1(), FILES: fakeR2(), ...extra };
 }
 function postRpc(env, body, headers = {}) {
-  const h = { "X-Internal-Token": TOKEN, "X-Abot-Owner-Email": EMAIL, ...headers };
+  const h = { "X-Abot-Owner-Email": EMAIL, ...headers };
   return worker.fetch(
     new Request("https://health.abot.run/mcp", {
       method: "POST", headers: { "content-type": "application/json", ...h },
@@ -212,14 +213,21 @@ async function call(env, name, args, headers) {
 
 const env = mcpEnv();
 
-// 鉴权
+// 鉴权：不看 X-Internal-Token，只强制 owner 邮箱
 {
-  const r1 = await postRpc(env, { jsonrpc: "2.0", id: 1, method: "tools/list" }, { "X-Internal-Token": "wrong" });
-  eq(r1.status, 401, "auth: wrong internal token -> 401");
+  const ignored = await postRpc(env, { jsonrpc: "2.0", id: 1, method: "tools/list" }, { "X-Internal-Token": "wrong" });
+  eq(ignored.status, 200, "auth: X-Internal-Token is ignored");
   const r2 = await postRpc(env, { jsonrpc: "2.0", id: 1, method: "tools/list" }, { "X-Abot-Owner-Email": "" });
   eq(r2.status, 401, "auth: missing owner email -> 401");
+  const noEmail = await worker.fetch(new Request("https://health.abot.run/mcp", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+  }), env);
+  eq(noEmail.status, 401, "auth: no email -> 401");
+  eq((await noEmail.json()).error, "owner email required", "auth: missing email message");
   const r3 = await postRpc(env, { jsonrpc: "2.0", id: 1, method: "tools/list" });
-  eq(r3.status, 200, "auth: valid token + email -> 200");
+  eq(r3.status, 200, "auth: email only -> 200");
   const tools = (await r3.json()).result.tools;
   eq(tools.length, 34, "tools/list: 34 tools");
   for (const name of [
@@ -548,7 +556,7 @@ ok(src.includes("env.FILES"), "static: R2 binding FILES");
 {
   const r = await worker.fetch(new Request("https://health.abot.run/mcp", {
     method: "POST",
-    headers: { "content-type": "application/json", "X-Internal-Token": TOKEN, "X-Abot-Owner-Email": EMAIL },
+    headers: { "content-type": "application/json", "X-Abot-Owner-Email": EMAIL },
     body: "{",
   }), env);
   eq(r.status, 400, "invalid json -> 400");
@@ -558,7 +566,7 @@ ok(src.includes("env.FILES"), "static: R2 binding FILES");
   ok(!JSON.stringify(j).includes("SyntaxError"), "invalid json hides SyntaxError");
   const r2 = await worker.fetch(new Request("https://health.abot.run/mcp", {
     method: "POST",
-    headers: { "content-type": "application/json", "X-Internal-Token": TOKEN, "X-Abot-Owner-Email": EMAIL },
+    headers: { "content-type": "application/json", "X-Abot-Owner-Email": EMAIL },
     body: "null",
   }), env);
   const j2 = await r2.json();

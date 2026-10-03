@@ -3,7 +3,6 @@
 import { unstable_dev } from "wrangler";
 import { fileURLToPath } from "node:url";
 
-const TOKEN = "internal-test-token";
 const EMAIL = "eric@abot.run";
 const config = fileURLToPath(new URL("../wrangler.jsonc", import.meta.url));
 
@@ -34,9 +33,8 @@ function utcDate(offsetDays) {
 }
 
 let worker;
-function authHeaders(extra = {}, { token = true, email = true } = {}) {
+function authHeaders(extra = {}, { email = true } = {}) {
   const h = { "content-type": "application/json" };
-  if (token) h["X-Internal-Token"] = TOKEN;
   if (email) h["X-Abot-Owner-Email"] = EMAIL;
   return { ...h, ...extra };
 }
@@ -79,7 +77,7 @@ async function main() {
   worker = await unstable_dev("src/worker.js", {
     config,
     experimental: { disableExperimentalWarning: true, disableDevRegistry: true, watch: false },
-    vars: { INTERNAL_TOKEN: TOKEN, OWNER_EMAIL: EMAIL },
+    vars: { OWNER_EMAIL: EMAIL },
     local: true,
     persist: false,
     logLevel: "error",
@@ -100,22 +98,21 @@ async function main() {
     eq(missing.json && missing.json.error, "not found", "404 message");
     noLeak(missing.text, "404 body");
 
-    const noTok = await rpc({ jsonrpc: "2.0", id: 1, method: "tools/list" }, authHeaders({}, { token: false }));
-    eq(noTok.status, 401, "no X-Internal-Token -> 401");
-    eq(noTok.json && noTok.json.error, "unauthorized", "no token message");
-    noLeak(noTok.text, "no token body");
+    const withEmail = await rpc({ jsonrpc: "2.0", id: 1, method: "tools/list" });
+    eq(withEmail.status, 200, "email only -> 200");
+    ok(withEmail.json && withEmail.json.result && Array.isArray(withEmail.json.result.tools), "email only lists tools");
+    noLeak(withEmail.text, "email only body");
 
-    const badTok = await rpc(
+    const ignoredTok = await rpc(
       { jsonrpc: "2.0", id: 1, method: "tools/list" },
       authHeaders({ "X-Internal-Token": "internal-test-token-WRONG" }),
     );
-    eq(badTok.status, 401, "wrong token -> 401");
-    eq(badTok.json && badTok.json.error, "unauthorized", "wrong token message");
-    noLeak(badTok.text, "wrong token body");
+    eq(ignoredTok.status, 200, "X-Internal-Token is ignored");
+    noLeak(ignoredTok.text, "ignored token body");
 
     const noEmail = await rpc(
       { jsonrpc: "2.0", id: 1, method: "tools/list" },
-      { "content-type": "application/json", "X-Internal-Token": TOKEN },
+      { "content-type": "application/json" },
     );
     eq(noEmail.status, 401, "no X-Abot-Owner-Email -> 401");
     eq(noEmail.json && noEmail.json.error, "owner email required", "missing email message");
@@ -139,7 +136,7 @@ async function main() {
     eq(getMcp.status, 401, "GET /mcp without auth -> 401");
 
     const listed = await rpc({ jsonrpc: "2.0", id: 7, method: "tools/list" });
-    eq(listed.status, 200, "valid token + email -> 200");
+    eq(listed.status, 200, "email only tools/list -> 200");
     const names = (listed.json.result.tools || []).map((t) => t.name);
     eq(names.length, 32, "tools/list count");
     for (const n of [
@@ -152,7 +149,7 @@ async function main() {
 
     const lower = await rpc(
       { jsonrpc: "2.0", id: 1, method: "tools/list" },
-      { "content-type": "application/json", "x-internal-token": TOKEN, "x-abot-owner-email": EMAIL },
+      { "content-type": "application/json", "x-abot-owner-email": EMAIL },
     );
     eq(lower.status, 200, "header names are case-insensitive");
 
@@ -162,7 +159,7 @@ async function main() {
     eq(init.json.result.protocolVersion, "2025-06-18", "protocol");
     eq(init.json.id, "init-1", "initialize echoes id");
 
-    const initNo = await rpc({ jsonrpc: "2.0", id: 1, method: "initialize" }, authHeaders({}, { token: false, email: false }));
+    const initNo = await rpc({ jsonrpc: "2.0", id: 1, method: "initialize" }, authHeaders({}, { email: false }));
     eq(initNo.status, 401, "initialize without auth -> 401");
   }
 
