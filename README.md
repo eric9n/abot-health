@@ -26,7 +26,7 @@
 |---|---|---|
 | 生产分支 | `main` | `main` |
 | 根目录 | `deploy/abot-health` | `deploy/abot-health-viewer` |
-| 构建命令 | 留空 | 留空 |
+| 构建命令 | `npm run build`（测试 + dry-run，不上传） | `npm run build` |
 | 部署命令 | `npm run deploy` | `npm run deploy` |
 | 非生产分支构建 | 关闭（或预览命令 `npm run preview`，只校验不上传） | 同左 |
 | 构建监视路径 | `src/*`、`test/*`、`scripts/*`、`deploy/abot-health/*`、`package*.json`、`wrangler.jsonc` | `pages/*`、`test/*`、`scripts/*`、`deploy/abot-health-viewer/*`、`package*.json`、`wrangler.jsonc` |
