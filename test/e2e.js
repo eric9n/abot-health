@@ -217,8 +217,8 @@ async function main() {
 
     const upNo = await call("update_prescription", {});
     toolErr(upNo, -32602, "id_required", "update_prescription missing id");
-    const upBad = await call("update_prescription", { id: "rx_does_not_exist", status: "finished" });
-    toolErr(upBad, -32602, "prescription_not_found", "update_prescription missing id not fake success");
+    const upBad = await call("update_prescription", { id: "rx_does_not_exist", patient_id: "pat_missing", status: "finished" });
+    toolErr(upBad, -32602, "patient_not_found", "update_prescription unknown patient");
 
     const weird = await call("add_visit", { patient_id: { bad: true }, visit_date: "2026-01-01" });
     eq(weird.__error && weird.__error.code, -32603, "non-string patient_id -> internal");
@@ -299,7 +299,7 @@ async function main() {
   ok(!visitsB.visits.some((v) => String(v.diagnosis).includes("DX_A")), "list_visits B hides A");
 
   const visitsInj = await call("list_visits", { patient_id: "' OR 1=1 --" });
-  eq(visitsInj.visits.length, 0, "list_visits injection returns none");
+  toolErr(visitsInj, -32602, "patient_not_found", "list_visits injection rejected");
 
   // 处方：关联本人就诊、拒绝跨病人 visit、状态更新不是假成功
   const rxActive = await call("add_prescription", {
@@ -328,14 +328,14 @@ async function main() {
   toolErr(rxNoDrug, -32602, "drug_name_required", "add_prescription missing drug");
 
   const beforeBadUp = await call("list_prescriptions", { patient_id: a.id });
-  const upMissing = await call("update_prescription", { id: "rx_still_missing", status: "finished", end_date: "2026-01-01" });
+  const upMissing = await call("update_prescription", { id: "rx_still_missing", patient_id: a.id, status: "finished", end_date: "2026-01-01" });
   toolErr(upMissing, -32602, "prescription_not_found", "update still errors after rows exist");
   const afterBadUp = await call("list_prescriptions", { patient_id: a.id });
   eq(afterBadUp.prescriptions.length, beforeBadUp.prescriptions.length, "failed update does not insert");
   ok(!afterBadUp.prescriptions.some((p) => p.drug_name === `DRUG_CROSS_${mark}`), "cross visit rx not stored");
   ok(!afterBadUp.prescriptions.some((p) => p.drug_name === `DRUG_NOV_${mark}`), "missing visit rx not stored");
 
-  const nothing = await call("update_prescription", { id: rxDone.id });
+  const nothing = await call("update_prescription", { id: rxDone.id, patient_id: a.id });
   toolErr(nothing, -32602, "nothing_to_update", "update_prescription empty patch");
 
   const rxListA0 = await call("list_prescriptions", { patient_id: a.id });
@@ -343,11 +343,11 @@ async function main() {
   eq(doneRow0.status, "active", "new prescription defaults to active");
   eq(doneRow0.end_date ?? null, null, "end_date null before update");
 
-  const updated = await call("update_prescription", { id: rxDone.id, status: "finished", end_date: "2026-09-30" });
+  const updated = await call("update_prescription", { id: rxDone.id, patient_id: a.id, status: "finished", end_date: "2026-09-30" });
   eq(updated.ok, true, "update_prescription ok");
   eq(updated.__error, undefined, "update_prescription no error");
 
-  const onlyEnd = await call("update_prescription", { id: rxActive.id, end_date: "2026-12-31" });
+  const onlyEnd = await call("update_prescription", { id: rxActive.id, patient_id: a.id, end_date: "2026-12-31" });
   eq(onlyEnd.ok, true, "update_prescription end_date only");
 
   const rxListA = await call("list_prescriptions", { patient_id: a.id });
@@ -487,6 +487,11 @@ async function main() {
   ok(sumAll.active_medications.some((m) => m.drug_name === `DRUG_A_ON_${mark}`), "family summary has A drug");
   ok(sumAll.active_medications.some((m) => m.drug_name === `DRUG_B_${mark}`), "family summary has B drug");
   ok(!sumAll.active_medications.some((m) => m.drug_name === `DRUG_A_OFF_${mark}`), "family summary hides finished");
+  const sumAllA = sumAll.active_medications.find((m) => m.drug_name === `DRUG_A_ON_${mark}`);
+  eq(sumAllA && sumAllA.patient_id, a.id, "family summary row carries patient_id");
+  eq(sumAllA && sumAllA.patient_name, (await call("list_patients", {})).patients.find((x) => x.id === a.id).name,
+    "family summary row carries patient_name");
+  ok(sumAll.recent_visits.every((v) => v.patient_id && "patient_name" in v), "family summary visits are attributed");
 
   // 医疗保险：字段往返、按病人隔离，更新和删除不能改到别人的保单
   const insNo = await call("add_insurance", { provider: "平安健康" });
@@ -574,12 +579,15 @@ async function main() {
   eq(insLeft.insurance[0].id, insA.id, "deleted the intended policy");
   eq((await call("list_insurance", { patient_id: b.id })).insurance.length, 1, "delete leaves the other patient");
 
-  // 未带 patient_id 的列表仍带正确归属，不把行改挂到别人身上
-  const allVisits = await call("list_visits", {});
-  const rowA = allVisits.visits.find((v) => v.diagnosis === `DX_A4_${mark}`);
-  const rowB = allVisits.visits.find((v) => v.diagnosis === `DX_B_${mark}`);
-  eq(rowA.patient_id, a.id, "unfiltered visit keeps A id");
-  eq(rowB.patient_id, b.id, "unfiltered visit keeps B id");
+  // 病历列表必须指定病人；处方只能由所属病人更新
+  for (const tool of ["list_visits", "list_prescriptions", "list_lab_reports"]) {
+    toolErr(await call(tool, {}), -32602, "patient_id_required", `${tool} requires patient_id`);
+  }
+  const rxOfB = (await call("list_prescriptions", { patient_id: b.id })).prescriptions[0];
+  toolErr(await call("update_prescription", { id: rxOfB.id, patient_id: a.id, status: "finished" }),
+    -32602, "prescription_not_found", "update_prescription cannot touch another patient's rx");
+  eq((await call("list_prescriptions", { patient_id: b.id })).prescriptions[0].status, rxOfB.status,
+    "cross-patient update leaves B unchanged");
 
   console.log(`\n${passed} passed, ${failed} failed`);
   if (failures.length) {

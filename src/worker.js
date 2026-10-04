@@ -246,27 +246,31 @@ const MCP_TOOLS = [
       hospital: { type: "string" }, department: { type: "string" },
       complaint: { type: "string" }, diagnosis: { type: "string" }, advice: { type: "string" } },
       required: ["patient_id", "visit_date"] } },
-  { name: "list_visits", description: "列出就诊记录",
-    inputSchema: { type: "object", properties: { patient_id: { type: "string" } } } },
+  { name: "list_visits", description: "列出某病人的就诊记录",
+    inputSchema: { type: "object", properties: { patient_id: { type: "string" } },
+      required: ["patient_id"] } },
   { name: "add_prescription", description: "添加处方/用药",
     inputSchema: { type: "object", properties: {
       patient_id: { type: "string" }, visit_id: { type: "string" },
       drug_name: { type: "string" }, spec: { type: "string" }, usage: { type: "string" },
       start_date: { type: "string" } }, required: ["patient_id", "drug_name"] } },
-  { name: "list_prescriptions", description: "列出用药（可按状态过滤）",
+  { name: "list_prescriptions", description: "列出某病人的用药（可按状态过滤）",
     inputSchema: { type: "object", properties: {
-      patient_id: { type: "string" }, status: { type: "string" } } } },
-  { name: "update_prescription", description: "更新用药状态（停药/吃完）",
+      patient_id: { type: "string" }, status: { type: "string" } },
+      required: ["patient_id"] } },
+  { name: "update_prescription", description: "更新用药状态（停药/吃完，仅限该病人的记录）",
     inputSchema: { type: "object", properties: {
-      id: { type: "string" }, status: { type: "string" }, end_date: { type: "string" } },
-      required: ["id"] } },
+      id: { type: "string" }, patient_id: { type: "string" },
+      status: { type: "string" }, end_date: { type: "string" } },
+      required: ["id", "patient_id"] } },
   { name: "add_lab_report", description: "添加检查报告",
     inputSchema: { type: "object", properties: {
       patient_id: { type: "string" }, report_date: { type: "string" },
       report_type: { type: "string" }, summary: { type: "string" }, file_url: { type: "string" } },
       required: ["patient_id", "report_date"] } },
-  { name: "list_lab_reports", description: "列出检查报告",
-    inputSchema: { type: "object", properties: { patient_id: { type: "string" } } } },
+  { name: "list_lab_reports", description: "列出某病人的检查报告",
+    inputSchema: { type: "object", properties: { patient_id: { type: "string" } },
+      required: ["patient_id"] } },
   { name: "upload_lab_report_file", description: "上传检查报告附件（jpg/png/webp/pdf，单文件 10MB），返回 file_id",
     inputSchema: { type: "object", properties: {
       patient_id: { type: "string" },
@@ -291,7 +295,7 @@ const MCP_TOOLS = [
       required: ["patient_id", "vaccine_name"] } },
   { name: "upcoming_vaccinations", description: "即将到期的疫苗",
     inputSchema: { type: "object", properties: { days: { type: "integer" } } } },
-  { name: "health_summary", description: "健康概况：在吃什么药、下次疫苗、最近就诊",
+  { name: "health_summary", description: "健康概况：在吃什么药、下次疫苗、最近就诊。不传 patient_id 时汇总所有病人，每条带 patient_id 和 patient_name",
     inputSchema: { type: "object", properties: { patient_id: { type: "string" } } } },
 { name: "list_allergies", description: "列出某病人的过敏史",
     inputSchema: { type: "object", properties: { patient_id: { type: "string" } },
@@ -481,10 +485,9 @@ async function callTool(name, args, env) {
     return { id };
   }
   if (name === "list_visits") {
-    let sql = "SELECT * FROM visits", params = [];
-    if (args.patient_id) { sql += " WHERE patient_id=?"; params.push(args.patient_id); }
-    sql += " ORDER BY visit_date DESC";
-    const r = await DB.prepare(sql).bind(...params).all();
+    await requirePatient(DB, args.patient_id);
+    const r = await DB.prepare("SELECT * FROM visits WHERE patient_id=? ORDER BY visit_date DESC")
+      .bind(args.patient_id).all();
     return { visits: r.results };
   }
   if (name === "add_prescription") {
@@ -498,8 +501,8 @@ async function callTool(name, args, env) {
     return { id };
   }
   if (name === "list_prescriptions") {
-    let sql = "SELECT * FROM prescriptions WHERE 1=1", params = [];
-    if (args.patient_id) { sql += " AND patient_id=?"; params.push(args.patient_id); }
+    await requirePatient(DB, args.patient_id);
+    let sql = "SELECT * FROM prescriptions WHERE patient_id=?", params = [args.patient_id];
     if (args.status) { sql += " AND status=?"; params.push(args.status); }
     sql += " ORDER BY created_at DESC";
     const r = await DB.prepare(sql).bind(...params).all();
@@ -507,12 +510,14 @@ async function callTool(name, args, env) {
   }
   if (name === "update_prescription") {
     if (!args.id) throw new InputError("id_required");
+    await requirePatient(DB, args.patient_id);
     const sets = [], params = [];
     if (args.status !== undefined) { sets.push("status=?"); params.push(args.status); }
     if (args.end_date !== undefined) { sets.push("end_date=?"); params.push(args.end_date); }
     if (!sets.length) throw new InputError("nothing_to_update");
-    params.push(args.id);
-    const res = await DB.prepare(`UPDATE prescriptions SET ${sets.join(",")} WHERE id=?`).bind(...params).run();
+    params.push(args.id, args.patient_id);
+    const res = await DB.prepare(
+      `UPDATE prescriptions SET ${sets.join(",")} WHERE id=? AND patient_id=?`).bind(...params).run();
     const changes = res && res.meta ? res.meta.changes : 0;
     if (!changes) throw new InputError("prescription_not_found");
     return { ok: true };
@@ -527,10 +532,9 @@ async function callTool(name, args, env) {
     return { id };
   }
   if (name === "list_lab_reports") {
-    let sql = "SELECT * FROM lab_reports", params = [];
-    if (args.patient_id) { sql += " WHERE patient_id=?"; params.push(args.patient_id); }
-    sql += " ORDER BY report_date DESC";
-    const r = await DB.prepare(sql).bind(...params).all();
+    await requirePatient(DB, args.patient_id);
+    const r = await DB.prepare("SELECT * FROM lab_reports WHERE patient_id=? ORDER BY report_date DESC")
+      .bind(args.patient_id).all();
     return { lab_reports: r.results };
   }
   if (name === "upload_lab_report_file") {
@@ -619,18 +623,22 @@ async function callTool(name, args, env) {
     const pid = args.patient_id;
     if (pid) await requirePatient(DB, pid);
     const rx = await DB.prepare(
-      `SELECT drug_name, spec, usage FROM prescriptions WHERE status='active'`
+      `SELECT patient_id, drug_name, spec, usage FROM prescriptions WHERE status='active'`
       + (pid ? " AND patient_id=?" : "")).bind(...(pid ? [pid] : [])).all();
     const vax = await DB.prepare(
-      `SELECT vaccine_name, dose_number, total_doses, next_due_at FROM vaccinations WHERE next_due_at IS NOT NULL AND date(next_due_at) >= date('now')`
+      `SELECT patient_id, vaccine_name, dose_number, total_doses, next_due_at FROM vaccinations WHERE next_due_at IS NOT NULL AND date(next_due_at) >= date('now')`
       + (pid ? " AND patient_id=?" : "") + ` ORDER BY next_due_at LIMIT 5`).bind(...(pid ? [pid] : [])).all();
     const visit = await DB.prepare(
-      `SELECT visit_date, hospital, diagnosis FROM visits`
+      `SELECT patient_id, visit_date, hospital, diagnosis FROM visits`
       + (pid ? " WHERE patient_id=?" : "") + ` ORDER BY visit_date DESC LIMIT 3`).bind(...(pid ? [pid] : [])).all();
+    const pats = await DB.prepare(
+      "SELECT id, name FROM patients" + (pid ? " WHERE id=?" : "")).bind(...(pid ? [pid] : [])).all();
+    const names = new Map((pats.results || []).map((p) => [p.id, p.name]));
+    const withName = (rows) => (rows || []).map((row) => ({ ...row, patient_name: names.get(row.patient_id) ?? null }));
     return {
-      active_medications: rx.results,
-      upcoming_vaccines: vax.results,
-      recent_visits: visit.results,
+      active_medications: withName(rx.results),
+      upcoming_vaccines: withName(vax.results),
+      recent_visits: withName(visit.results),
     };
   }
   if (name === "list_allergies") {

@@ -263,10 +263,22 @@ const rxBad = await call(env, "add_prescription", { patient_id: "nope", drug_nam
 eq(rxBad.__error && rxBad.__error.code, -32602, "add_prescription bogus patient -> -32602");
 const rx = await call(env, "add_prescription", { patient_id: p.id, drug_name: "氨苄西林" });
 ok(rx.id.startsWith("rx_"), "add_prescription valid ok");
-const upBad = await call(env, "update_prescription", { id: "rx_nope", status: "finished" });
+const upBad = await call(env, "update_prescription", { id: "rx_nope", patient_id: p.id, status: "finished" });
 eq(upBad.__error && upBad.__error.message, "prescription_not_found", "update_prescription bogus id");
-const up = await call(env, "update_prescription", { id: rx.id, status: "finished" });
+const upNoPid = await call(env, "update_prescription", { id: rx.id, status: "finished" });
+eq(upNoPid.__error && upNoPid.__error.message, "patient_id_required", "update_prescription requires patient_id");
+const upOther = await call(env, "update_prescription", { id: rx.id, patient_id: p2.id, status: "finished" });
+eq(upOther.__error && upOther.__error.message, "prescription_not_found", "update_prescription cannot touch another patient's rx");
+ok(env.DB.__tables.prescriptions.find((r) => r.id === rx.id).status !== "finished", "cross-patient update leaves rx unchanged");
+const up = await call(env, "update_prescription", { id: rx.id, patient_id: p.id, status: "finished" });
 eq(up.ok, true, "update_prescription valid ok");
+
+for (const tool of ["list_visits", "list_prescriptions", "list_lab_reports"]) {
+  const noPid = await call(env, tool, {});
+  eq(noPid.__error && noPid.__error.message, "patient_id_required", `${tool} requires patient_id`);
+  const badPid = await call(env, tool, { patient_id: "nope" });
+  eq(badPid.__error && badPid.__error.message, "patient_not_found", `${tool} unknown patient`);
+}
 
 const labBad = await call(env, "add_lab_report", { patient_id: "nope", report_date: "2026-10-01" });
 eq(labBad.__error && labBad.__error.code, -32602, "add_lab_report bogus patient -> -32602");
