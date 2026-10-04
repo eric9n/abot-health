@@ -256,6 +256,14 @@ function sentence(parts) {
   return text ? el("p", { class: "desc", text: text + "。" }) : null;
 }
 
+function meta(label, value) {
+  if (!value) return null;
+  return el("div", {}, [
+    el("span", { class: "meta-label", text: label }),
+    el("span", { class: "meta-value", text: value }),
+  ]);
+}
+
 function badge(text, kind) {
   if (!text) return null;
   return el("span", { class: `badge badge-${kind || "muted"}`, text });
