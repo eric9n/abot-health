@@ -1,0 +1,8 @@
+{
+  "name": "abot-health-deploy",
+  "private": true,
+  "scripts": {
+    "deploy": "cd ../.. && npm ci && node scripts/cf-build.mjs abot-health --deploy",
+    "preview": "cd ../.. && npm ci && node scripts/cf-build.mjs abot-health"
+  }
+}

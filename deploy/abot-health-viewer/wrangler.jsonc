@@ -1,0 +1,31 @@
+// abot-health-viewer 生产配置。只能由 Cloudflare Workers Builds 通过 scripts/cf-build.mjs 部署：
+// main 指向 cf-build 测试通过后才生成的 .build/ 产物，直接 wrangler deploy 会找不到入口。
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "abot-health-viewer",
+  "main": "../../.build/abot-health-viewer/worker.js",
+  "compatibility_date": "2026-09-01",
+  // Access 只保护 health-view.abot.run；workers.dev 和预览 URL 会绕过登录，必须关闭
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [
+    { "pattern": "health-view.abot.run/*", "zone_name": "abot.run" }
+  ],
+  "vars": {
+    "ACCESS_TEAM_DOMAIN": "boliam.cloudflareaccess.com",
+    "ACCESS_AUD": "21eac035234cf69c8b7aff1d3ee88a0b8cb94172ca27b3b41dc336cc033e7538"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "abot-data",
+      "database_id": "bb648d2d-e0e6-4d42-87ea-ed2e50cfcc3f"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "FILES",
+      "bucket_name": "abot-health-files"
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+// abot-health 生产配置。只能由 Cloudflare Workers Builds 通过 scripts/cf-build.mjs 部署：
+// main 指向 cf-build 测试通过后才生成的 .build/ 产物，直接 wrangler deploy 会找不到入口。
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "abot-health",
+  "main": "../../.build/abot-health/worker.js",
+  "compatibility_date": "2026-09-01",
+  // 只接受网关经 Service Bindings 的调用；/mcp 靠网关注入的 X-Abot-Owner-Email 识别身份，不能有公网入口
+  "workers_dev": false,
+  "preview_urls": false,
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "abot-data",
+      "database_id": "bb648d2d-e0e6-4d42-87ea-ed2e50cfcc3f"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "FILES",
+      "bucket_name": "abot-health-files"
+    }
+  ]
+}
