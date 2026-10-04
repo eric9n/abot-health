@@ -55,8 +55,20 @@ function assertDeployContext() {
   if (branch !== PRODUCTION_BRANCH) {
     fail(`拒绝部署：当前分支 ${branch || "(未知)"} 不是生产分支 ${PRODUCTION_BRANCH}。`);
   }
-  if (!/^[0-9a-f]{7,40}$/.test(process.env.WORKERS_CI_COMMIT_SHA || "")) {
-    fail("拒绝部署：缺少 WORKERS_CI_COMMIT_SHA。");
+  const sha = commitSha();
+  if (!sha) fail("拒绝部署：无法确定提交号（WORKERS_CI_COMMIT_SHA 与 git rev-parse HEAD 都不可用）。");
+  return sha;
+}
+
+// 手动触发的构建可能不注入 WORKERS_CI_COMMIT_SHA，回退到克隆下来的仓库 HEAD
+function commitSha() {
+  const fromEnv = process.env.WORKERS_CI_COMMIT_SHA || "";
+  if (/^[0-9a-f]{7,40}$/.test(fromEnv)) return fromEnv;
+  try {
+    const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: ROOT, encoding: "utf8" }).trim();
+    return /^[0-9a-f]{40}$/.test(head) ? head : "";
+  } catch {
+    return "";
   }
 }
 
@@ -72,7 +84,7 @@ function checkPagesBundle() {
 
 function main() {
   const { deploy, targets } = parseArgs(process.argv.slice(2));
-  if (deploy) assertDeployContext();
+  const sha = deploy ? assertDeployContext() : "";
 
   step("校验查看页嵌入内容");
   checkPagesBundle();
@@ -93,7 +105,6 @@ function main() {
     run(process.execPath, [WRANGLER, "deploy", "-c", config, "--dry-run", "--outdir", join(outDir, "dist")]);
 
     if (deploy) {
-      const sha = process.env.WORKERS_CI_COMMIT_SHA;
       step(`${name}：部署 ${sha.slice(0, 7)}`);
       run(process.execPath, [WRANGLER, "deploy", "-c", config,
         "--tag", sha.slice(0, 12), "--message", `Workers Builds ${process.env.WORKERS_CI_BUILD_UUID || ""} ${sha}`.trim()]);
