@@ -236,6 +236,7 @@ function viewerDb(seed) {
         async run() { return { meta: { changes: 1 } }; },
         async all() {
           const q = sql.replace(/\s+/g, " ").trim();
+          if (/^PRAGMA table_info\(patients\)$/i.test(q)) return { results: [{ name: "avatar_r2_key" }] };
           const match = q.match(/^SELECT (.+) FROM (\w+)(?: WHERE patient_id=\?)?(?: ORDER BY .+)?$/i);
           if (!match) throw new Error("viewer fake select: " + q);
           let found = tables[match[2]] || [];

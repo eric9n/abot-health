@@ -138,7 +138,7 @@ async function main() {
     const listed = await rpc({ jsonrpc: "2.0", id: 7, method: "tools/list" });
     eq(listed.status, 200, "email only tools/list -> 200");
     const names = (listed.json.result.tools || []).map((t) => t.name);
-    eq(names.length, 32, "tools/list count");
+    eq(names.length, 34, "tools/list count");
     for (const n of [
       "add_patient", "list_patients", "add_visit", "list_visits",
       "add_prescription", "list_prescriptions", "update_prescription",
