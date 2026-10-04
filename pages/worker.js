@@ -1,6 +1,6 @@
 // abot-health-viewer Worker
 // 直接绑定 D1/R2，前端同域调用 /api/*，无需 MCP 鉴权
-// Cloudflare Access 已做登录保护
+// 登录由 Cloudflare Access 负责，Worker 内再校验 Access JWT（见 verifyAccess）
 
 const INDEX_HTML = `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -329,6 +329,42 @@ button { cursor: pointer; }
 .due-banner h3 { margin-bottom: 6px; }
 
 .due-banner li { margin-left: 1.1em; }
+
+.card.ins {
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  padding: 12px 16px;
+  margin-bottom: 12px;
+}
+
+.vax-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.vax-head h3 { font-size: 15px; }
+
+.pill {
+  font-size: 12px;
+  padding: 2px 10px;
+  border-radius: 20px;
+  background: #d1fae5;
+  color: #065f46;
+}
+
+.meta-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 8px 16px;
+  margin-top: 10px;
+}
+
+.meta-label { display: block; font-size: 12px; color: #6b7280; }
+
+.meta-value { font-size: 13px; color: #1a1a1a; word-break: break-word; }
 
 .vax.is-due,
 .ins.is-due {
@@ -791,6 +827,14 @@ function errorBanner(text) {
 function sentence(parts) {
   const text = parts.filter(Boolean).join("。");
   return text ? el("p", { class: "desc", text: text + "。" }) : null;
+}
+
+function meta(label, value) {
+  if (!value) return null;
+  return el("div", {}, [
+    el("span", { class: "meta-label", text: label }),
+    el("span", { class: "meta-value", text: value }),
+  ]);
 }
 
 function badge(text, kind) {
@@ -1545,6 +1589,7 @@ function avatarExtFor(mime) {
 function decodeAvatarBase64(input) {
   if (typeof input !== "string" || !input.length) throw new Error("invalid_base64");
   const clean = input.includes(",") ? input.split(",").pop() : input;
+  if (clean.length > Math.ceil(MAX_AVATAR_BYTES / 3) * 4 + 1024) throw new Error("file_too_large");
   let binary;
   try {
     binary = atob(clean.replace(/\s+/g, ""));
@@ -1619,10 +1664,87 @@ async function getFile(env, patientId, fileId) {
   };
 }
 
+// ---------- Cloudflare Access ----------
+// Access 只保护配置过的主机名（health-view.abot.run）；workers.dev、预览 URL 等入口会绕过它。
+// 所以每个请求都在 Worker 内校验 Cf-Access-Jwt-Assertion；未配置 ACCESS_TEAM_DOMAIN/ACCESS_AUD 时一律拒绝。
+const JWKS_TTL_MS = 60 * 60 * 1000;
+const JWKS_MIN_REFRESH_MS = 60 * 1000;
+let jwksCache = null;
+
+function b64urlToBytes(s) {
+  const b64 = s.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((s.length + 3) % 4);
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+function b64urlJson(s) {
+  return JSON.parse(new TextDecoder().decode(b64urlToBytes(s)));
+}
+
+async function accessKeys(team, force) {
+  const now = Date.now();
+  if (jwksCache && jwksCache.team === team) {
+    const age = now - jwksCache.at;
+    if (age < JWKS_TTL_MS && (!force || age < JWKS_MIN_REFRESH_MS)) return jwksCache.keys;
+  }
+  const res = await fetch(`https://${team}/cdn-cgi/access/certs`);
+  if (!res.ok) throw new Error("access_certs_unavailable");
+  const body = await res.json();
+  const keys = new Map();
+  for (const jwk of body.keys || []) {
+    if (jwk.kty !== "RSA" || !jwk.kid) continue;
+    keys.set(jwk.kid, await crypto.subtle.importKey(
+      "jwk", jwk, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, ["verify"]));
+  }
+  jwksCache = { team, keys, at: now };
+  return keys;
+}
+
+async function verifyAccess(request, env) {
+  const team = env.ACCESS_TEAM_DOMAIN;
+  const aud = env.ACCESS_AUD;
+  if (!team || !aud) return false;
+  const token = request.headers.get("Cf-Access-Jwt-Assertion");
+  if (!token) return false;
+  const parts = token.split(".");
+  if (parts.length !== 3) return false;
+  let header, payload, signature;
+  try {
+    header = b64urlJson(parts[0]);
+    payload = b64urlJson(parts[1]);
+    signature = b64urlToBytes(parts[2]);
+  } catch {
+    return false;
+  }
+  if (!header || header.alg !== "RS256" || typeof header.kid !== "string") return false;
+  let key = (await accessKeys(team, false)).get(header.kid);
+  if (!key) key = (await accessKeys(team, true)).get(header.kid);
+  if (!key) return false;
+  const signed = new TextEncoder().encode(parts[0] + "." + parts[1]);
+  if (!(await crypto.subtle.verify("RSASSA-PKCS1-v1_5", key, signature, signed))) return false;
+  const now = Math.floor(Date.now() / 1000);
+  const auds = Array.isArray(payload.aud) ? payload.aud : [payload.aud];
+  if (!auds.includes(aud)) return false;
+  if (payload.iss !== `https://${team}`) return false;
+  if (typeof payload.exp !== "number" || payload.exp <= now) return false;
+  if (typeof payload.nbf === "number" && payload.nbf > now + 60) return false;
+  return true;
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     const path = url.pathname;
+
+    let allowed = false;
+    try {
+      allowed = await verifyAccess(request, env);
+    } catch {
+      allowed = false;
+    }
+    if (!allowed) return json({ error: "forbidden" }, 403);
 
     // API
     if (path === "/api/patients") {
@@ -1675,6 +1797,11 @@ export default {
       }
     }
     if (path === "/api/avatar" && request.method === "POST") {
+      // Access cookie 会随跨站请求一起带上，写操作只接受同源 JSON
+      if (request.headers.get("Origin") !== url.origin) return json({ error: "forbidden" }, 403);
+      if (!(request.headers.get("content-type") || "").toLowerCase().startsWith("application/json")) {
+        return badRequest("invalid_content_type");
+      }
       let body;
       try {
         body = await request.json();

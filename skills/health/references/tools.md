@@ -63,11 +63,11 @@
 
 ## list_visits
 
-列出就诊记录
+列出某病人的就诊记录
 
 参数：
 
-- `patient_id`（string）
+- `patient_id`*（string）
 
 ## add_prescription
 
@@ -84,20 +84,21 @@
 
 ## list_prescriptions
 
-列出用药（可按状态过滤）
+列出某病人的用药（可按状态过滤）
 
 参数：
 
-- `patient_id`（string）
+- `patient_id`*（string）
 - `status`（string）
 
 ## update_prescription
 
-更新用药状态（停药/吃完）
+更新用药状态（停药/吃完，仅限该病人的记录）
 
 参数：
 
 - `id`*（string）
+- `patient_id`*（string）
 - `status`（string）
 - `end_date`（string）
 
@@ -115,11 +116,11 @@
 
 ## list_lab_reports
 
-列出检查报告
+列出某病人的检查报告
 
 参数：
 
-- `patient_id`（string）
+- `patient_id`*（string）
 
 ## upload_lab_report_file
 
@@ -173,7 +174,7 @@
 
 ## health_summary
 
-健康概况：在吃什么药、下次疫苗、最近就诊
+健康概况：在吃什么药、下次疫苗、最近就诊。不传 patient_id 时汇总所有病人，每条带 patient_id 和 patient_name
 
 参数：
 

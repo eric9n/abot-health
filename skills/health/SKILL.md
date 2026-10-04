@@ -27,7 +27,7 @@ Worker `abot-health`，域名 `health.abot.run`，MCP 入口 `POST /mcp`，`serv
 
 记录和附件元数据在 D1。文件在 R2 binding `FILES`：检查报告附件的 key 在 `patients/{patient_id}/lab-files/`，头像在 `avatars/{patient_id}.{ext}`。
 
-病历、附件、医保按 `patient_id` 隔离。写操作会先确认病人存在。处方若带 `visit_id`，该就诊必须属于同一病人。检查报告附件若带 `lab_report_id`，该报告必须属于同一病人。
+病历、附件、医保按 `patient_id` 隔离。列表类工具都必须带 `patient_id`；跨病人查询只有 `list_patients`、`upcoming_vaccinations`，以及不带 `patient_id` 的 `health_summary`（每条带 `patient_name`）。写操作会先确认病人存在，`update_prescription` 也要带 `patient_id`，只能改该病人的处方。处方若带 `visit_id`，该就诊必须属于同一病人。检查报告附件若带 `lab_report_id`，该报告必须属于同一病人。
 
 检查报告附件只接受 jpg、jpeg、png、webp、pdf，单文件 10MB。头像只接受 jpg、jpeg、png、webp，单文件 2MB。`content_base64` 可以带 data URL 前缀。
 

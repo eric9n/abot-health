@@ -5,7 +5,8 @@
   "scripts": {
     "test": "node test/basic.js && node test/viewer.js && node test/e2e.js",
     "test:unit": "node test/basic.js && node test/viewer.js",
-    "test:e2e": "node test/e2e.js"
+    "test:e2e": "node test/e2e.js",
+    "build": "node scripts/cf-build.mjs all"
   },
   "devDependencies": {
     "wrangler": "^4.146.0"

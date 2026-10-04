@@ -1,0 +1,9 @@
+{
+  "name": "abot-health-viewer-deploy",
+  "private": true,
+  "scripts": {
+    "build": "cd ../.. && npm ci && node scripts/cf-build.mjs abot-health-viewer",
+    "deploy": "cd ../.. && npm ci && node scripts/cf-build.mjs abot-health-viewer --deploy",
+    "preview": "cd ../.. && npm ci && node scripts/cf-build.mjs abot-health-viewer"
+  }
+}

@@ -1,6 +1,7 @@
-// 本地开发与 e2e。不要拿这个配置部署：没有生产 D1，也没有密钥。
+// 本地开发与 e2e 专用。生产配置在 deploy/<worker>/wrangler.jsonc，只能经 Workers Builds 部署（见 README）。
+// name 故意与线上不同，误跑 wrangler deploy 也不会覆盖生产 Worker。
 {
-  "name": "abot-health",
+  "name": "abot-health-local",
   "main": "src/worker.js",
   "compatibility_date": "2025-09-01",
   "d1_databases": [
