@@ -30,7 +30,7 @@
 | 部署命令 | `npm run deploy` | `npm run deploy` |
 | 非生产分支构建 | 关闭（或预览命令 `npm run preview`，只校验不上传） | 同左 |
 | 构建监视路径 | `src/*`、`test/*`、`scripts/*`、`deploy/abot-health/*`、`package*.json`、`wrangler.jsonc` | `pages/*`、`test/*`、`scripts/*`、`deploy/abot-health-viewer/*`、`package*.json`、`wrangler.jsonc` |
-| 构建变量 | `NODE_VERSION=22` | `NODE_VERSION=22` |
+| 构建变量 | `NODE_VERSION=22`、`SKIP_DEPENDENCY_INSTALL=1`（依赖由脚本在仓库根目录安装） | 同左 |
 | Git 仓库 | Cursor Origin `dagow/abot-health` | 同左 |
 
 生产配置要点：两个 Worker 都关闭 `workers_dev` 和预览 URL。`abot-health` 只经网关 Service Bindings 访问。`abot-health-viewer` 只走 `health-view.abot.run/*`（Cloudflare Access 保护），Worker 内还会用 `ACCESS_TEAM_DOMAIN`、`ACCESS_AUD` 校验 Access JWT，未配置时拒绝所有请求。`OWNER_EMAIL` 请在控制台设为 Secret（部署不会覆盖 Secret）。
