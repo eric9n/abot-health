@@ -254,8 +254,83 @@ function viewerDb(seed) {
   };
 }
 
+// ---------- Cloudflare Access JWT ----------
+const TEAM = "team.cloudflareaccess.com";
+const AUD = "aud-viewer";
+const ACCESS_ENV = { ACCESS_TEAM_DOMAIN: TEAM, ACCESS_AUD: AUD };
+const signingKeys = await crypto.subtle.generateKey(
+  { name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" },
+  true, ["sign", "verify"]);
+const otherKeys = await crypto.subtle.generateKey(
+  { name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" },
+  true, ["sign", "verify"]);
+const publicJwk = { ...(await crypto.subtle.exportKey("jwk", signingKeys.publicKey)), kid: "k1" };
+let certFetches = 0;
+globalThis.fetch = async (input) => {
+  const u = String(input && input.url ? input.url : input);
+  if (u !== `https://${TEAM}/cdn-cgi/access/certs`) throw new Error("unexpected fetch " + u);
+  certFetches++;
+  return Response.json({ keys: [publicJwk] });
+};
+const b64url = (bytes) => Buffer.from(bytes).toString("base64url");
+async function accessJwt(claims = {}, { kid = "k1", key = signingKeys.privateKey, alg = "RS256" } = {}) {
+  const now = Math.floor(Date.now() / 1000);
+  const head = b64url(Buffer.from(JSON.stringify({ alg, kid, typ: "JWT" })));
+  const body = b64url(Buffer.from(JSON.stringify({
+    aud: [AUD], iss: `https://${TEAM}`, email: "owner@example.com", iat: now, nbf: now, exp: now + 600, ...claims,
+  })));
+  const sig = await crypto.subtle.sign("RSASSA-PKCS1-v1_5", key, new TextEncoder().encode(head + "." + body));
+  return head + "." + body + "." + b64url(new Uint8Array(sig));
+}
+const goodJwt = await accessJwt();
+function authed(url, init = {}) {
+  const headers = new Headers(init.headers || {});
+  headers.set("Cf-Access-Jwt-Assertion", goodJwt);
+  return new Request(url, { ...init, headers });
+}
+
+{
+  const env = { ...ACCESS_ENV, DB: viewerDb({ patients: [{ id: "pat_a", name: "甲" }] }) };
+  const status = async (req, e = env) => (await viewer.fetch(req, e)).status;
+  eq(await status(new Request("https://viewer.local/api/patients")), 403, "access: no jwt is rejected");
+  eq(await status(new Request("https://viewer.local/")), 403, "access: static page also requires jwt");
+  eq(await status(authed("https://viewer.local/api/patients"), { DB: env.DB }), 403, "access: unconfigured env fails closed");
+  eq(await status(authed("https://viewer.local/api/patients")), 200, "access: valid jwt allowed");
+  const withJwt = async (jwt) => status(new Request("https://viewer.local/api/patients", { headers: { "Cf-Access-Jwt-Assertion": jwt } }));
+  eq(await withJwt(await accessJwt({ aud: ["other-app"] })), 403, "access: wrong aud rejected");
+  eq(await withJwt(await accessJwt({ iss: "https://evil.cloudflareaccess.com" })), 403, "access: wrong issuer rejected");
+  eq(await withJwt(await accessJwt({ exp: Math.floor(Date.now() / 1000) - 5 })), 403, "access: expired rejected");
+  eq(await withJwt(await accessJwt({}, { key: otherKeys.privateKey })), 403, "access: bad signature rejected");
+  eq(await withJwt(await accessJwt({}, { alg: "none" })), 403, "access: alg none rejected");
+  eq(await withJwt("not.a.jwt"), 403, "access: garbage rejected");
+  const before = certFetches;
+  eq(await withJwt(await accessJwt({}, { kid: "unknown" })), 403, "access: unknown kid rejected");
+  eq(await withJwt(await accessJwt({}, { kid: "unknown2" })), 403, "access: unknown kid rejected again");
+  ok(certFetches - before <= 1, "access: unknown kids do not hammer the certs endpoint");
+
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0]).toString("base64");
+  const avatarBody = JSON.stringify({ patient_id: "pat_a", filename: "a.png", content_base64: png });
+  eq(await status(authed("https://viewer.local/api/avatar", {
+    method: "POST", headers: { origin: "https://evil.example", "content-type": "application/json" }, body: avatarBody,
+  })), 403, "avatar: cross-origin POST rejected");
+  eq(await status(authed("https://viewer.local/api/avatar", {
+    method: "POST", headers: { "content-type": "application/json" }, body: avatarBody,
+  })), 403, "avatar: POST without Origin rejected");
+  eq(await status(authed("https://viewer.local/api/avatar", {
+    method: "POST", headers: { origin: "https://viewer.local", "content-type": "text/plain" }, body: avatarBody,
+  })), 400, "avatar: non-JSON content type rejected");
+  const huge = "A".repeat(4 * 1024 * 1024);
+  const tooBig = await viewer.fetch(authed("https://viewer.local/api/avatar", {
+    method: "POST", headers: { origin: "https://viewer.local", "content-type": "application/json" },
+    body: JSON.stringify({ patient_id: "pat_a", filename: "a.png", content_base64: huge }),
+  }), { ...env, FILES: { async put() { throw new Error("should not upload"); } } });
+  eq(tooBig.status, 400, "avatar: oversized base64 rejected before decode");
+  eq((await tooBig.json()).error, "file_too_large", "avatar: oversized error code");
+}
+
 {
   const env = {
+    ...ACCESS_ENV,
     DB: viewerDb({
       patients: [
         { id: "pat_a", name: "甲" },
@@ -267,7 +342,7 @@ function viewerDb(seed) {
       ],
     }),
   };
-  const res = await viewer.fetch(new Request("https://viewer.local/api/patient?id=pat_a"), env);
+  const res = await viewer.fetch(authed("https://viewer.local/api/patient?id=pat_a"), env);
   eq(res.status, 200, "patient api 200");
   const body = await res.json();
   eq(body.insurance.length, 1, "api returns only that patient's policies");
@@ -277,13 +352,13 @@ function viewerDb(seed) {
   eq(body.insurance[0].coverage_details, "住院报销 80%", "api coverage");
   eq(body.insurance[0].valid_to, soon, "api valid_to");
   ok(!body.insurance.some((row) => row.patient_id === "pat_b"), "api does not leak the other patient");
-  const other = await viewer.fetch(new Request("https://viewer.local/api/patient?id=pat_b"), env);
+  const other = await viewer.fetch(authed("https://viewer.local/api/patient?id=pat_b"), env);
   const otherBody = await other.json();
   eq(otherBody.insurance.length, 1, "other patient has their own policy");
   eq(otherBody.insurance[0].id, "ins_b", "other patient policy id");
-  const missing = await viewer.fetch(new Request("https://viewer.local/api/patient?id=pat_missing"), env);
+  const missing = await viewer.fetch(authed("https://viewer.local/api/patient?id=pat_missing"), env);
   eq(missing.status, 404, "unknown patient 404");
-  const noId = await viewer.fetch(new Request("https://viewer.local/api/patient"), env);
+  const noId = await viewer.fetch(authed("https://viewer.local/api/patient"), env);
   eq(noId.status, 400, "patient api requires id");
 }
 
