@@ -170,6 +170,20 @@ const empty = sandbox.renderInsurance({ insurance: [] });
 eq(empty.textContent, "还没有医疗保险", "empty insurance tab");
 eq(empty.className, "hint", "empty state uses hint");
 
+const vaccineView = sandbox.renderVaccines({
+  vaccinations: [
+    { id: "done", vaccine_name: "狂犬疫苗", dose_number: 4, total_doses: 4, vaccinated_at: "2026-10-07" },
+    { id: "plan", vaccine_name: "狂犬疫苗", dose_number: 4, total_doses: 4, next_due_at: "2026-10-07" },
+  ],
+});
+const vaccineText = texts(vaccineView).join("\n");
+ok(vaccineText.includes("已接种"), "completed dose is a static record");
+ok(vaccineText.includes("2026-10-07"), "completed dose shows the date it was given");
+ok(!vaccineText.includes("待接种"), "a scheduled dose is not shown on the record");
+eq(vaccineView.children.filter((child) => child.tag === "article").length, 1, "only the completed dose is listed");
+const vaccineEmpty = sandbox.renderVaccines({ vaccinations: [{ id: "plan", vaccine_name: "狂犬疫苗", next_due_at: "2026-10-07" }] });
+eq(vaccineEmpty.textContent, "还没有疫苗记录", "schedule-only rows are not records");
+
 sandbox.__state.patients = [{ id: "p1", name: "甲" }];
 sandbox.__state.selectedId = "p1";
 sandbox.__state.loadingList = false;

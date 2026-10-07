@@ -5,7 +5,7 @@ description: 记录或查询 abot 健康档案时使用：病人（不限于亲�
 
 # health
 
-管理健康档案。工具名和参数以 [references/tools.md](references/tools.md) 为准，该文件从 `src/worker.js` 的 `MCP_TOOLS` 抽出，共 34 个。
+管理健康档案。工具名和参数以 [references/tools.md](references/tools.md) 为准，该文件从 `src/worker.js` 的 `MCP_TOOLS` 抽出，共 35 个。
 
 ## 何时使用
 
@@ -14,10 +14,10 @@ description: 记录或查询 abot 健康档案时使用：病人（不限于亲�
 - 病人档案（姓名、关系、出生日期、性别、电话、邮箱、备注、头像）
 - 就诊、处方与用药状态
 - 检查报告和报告附件
-- 疫苗接种与即将到期的疫苗
+- 疫苗接种（已经打过的针）
 - 过敏史、慢性病、手术史、紧急联系人
 - 医疗保险
-- 某人的健康概况（在用药、下次疫苗、最近就诊）
+- 某人的健康概况（在用药、最近就诊）
 
 病人可以是任何人，不限于亲属。
 
@@ -27,11 +27,13 @@ Worker `abot-health`，域名 `health.abot.run`，MCP 入口 `POST /mcp`，`serv
 
 记录和附件元数据在 D1。文件在 R2 binding `FILES`：检查报告附件的 key 在 `patients/{patient_id}/lab-files/`，头像在 `avatars/{patient_id}.{ext}`。
 
-病历、附件、医保按 `patient_id` 隔离。列表类工具都必须带 `patient_id`；跨病人查询只有 `list_patients`、`upcoming_vaccinations`，以及不带 `patient_id` 的 `health_summary`（每条带 `patient_name`）。写操作会先确认病人存在，`update_prescription` 也要带 `patient_id`，只能改该病人的处方。处方若带 `visit_id`，该就诊必须属于同一病人。检查报告附件若带 `lab_report_id`，该报告必须属于同一病人。
+病历、附件、医保按 `patient_id` 隔离。列表类工具都必须带 `patient_id`；跨病人查询只有 `list_patients`，以及不带 `patient_id` 的 `health_summary`（每条带 `patient_name`）。写操作会先确认病人存在，`update_prescription` 和 `update_vaccination` 也要带 `patient_id`，只能改该病人的记录。处方若带 `visit_id`，该就诊必须属于同一病人。检查报告附件若带 `lab_report_id`，该报告必须属于同一病人。
 
 检查报告附件只接受 jpg、jpeg、png、webp、pdf，单文件 10MB。头像只接受 jpg、jpeg、png、webp，单文件 2MB。`content_base64` 可以带 data URL 前缀。
 
-过敏 `severity` 只接受 `mild`、`moderate`、`severe`。慢性病 `status` 只接受 `active`、`managed`、`cured`。新建处方的 `status` 默认为 `active`。`add_emergency_contact` 把 `is_primary` 设为真时，同一病人的其他联系人会取消首选。`upcoming_vaccinations` 未传入正整数 `days` 时按 30 天查询。
+过敏 `severity` 只接受 `mild`、`moderate`、`severe`。慢性病 `status` 只接受 `active`、`managed`、`cured`。新建处方的 `status` 默认为 `active`。`add_emergency_contact` 把 `is_primary` 设为真时，同一病人的其他联系人会取消首选。
+
+疫苗记录是静态的：只在接种完成后用 `add_vaccination` 写入，`vaccinated_at` 必填。`update_vaccination` 只更正已经写下的记录（名称、剂次、接种日期），不能把接种日期清空。剂次 `dose_number` 可以是 `0`；传空字符串会清空剂次。查看页只显示有接种日期的记录。
 
 ## 认证
 

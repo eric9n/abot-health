@@ -138,14 +138,16 @@ async function main() {
     const listed = await rpc({ jsonrpc: "2.0", id: 7, method: "tools/list" });
     eq(listed.status, 200, "email only tools/list -> 200");
     const names = (listed.json.result.tools || []).map((t) => t.name);
-    eq(names.length, 34, "tools/list count");
+    eq(names.length, 35, "tools/list count");
     for (const n of [
       "add_patient", "list_patients", "add_visit", "list_visits",
       "add_prescription", "list_prescriptions", "update_prescription",
       "add_lab_report", "list_lab_reports", "add_vaccination",
-      "upcoming_vaccinations", "health_summary",
+      "list_vaccinations", "update_vaccination",
+      "health_summary",
       "list_insurance", "add_insurance", "update_insurance", "delete_insurance",
     ]) ok(names.includes(n), `tool present: ${n}`);
+    ok(!names.includes("upcoming_vaccinations"), "upcoming_vaccinations removed");
 
     const lower = await rpc(
       { jsonrpc: "2.0", id: 1, method: "tools/list" },
@@ -238,7 +240,6 @@ async function main() {
   const mark = Date.now().toString(36);
   const dueSoon = utcDate(5);
   const dueFar = utcDate(120);
-  const duePast = utcDate(-30);
 
   const a = await call("add_patient", {
     name: `本人_${mark}`, relationship: "本人", dob: "1990-01-02", notes: `备注A_${mark} "引号"`,
@@ -408,80 +409,94 @@ async function main() {
   eq(labsB.lab_reports[0].summary, `LAB_B_${mark}`, "lab B summary");
   ok(!labsA.lab_reports.some((r) => String(r.summary).includes(`LAB_B_${mark}`)), "labs A hides B");
 
-  // 疫苗：dose 0 不能被当成空；即将到期按窗口过滤且不串病人
+  // 疫苗是已经打过的静态记录。待接种不写在这里。
+  const vaxNoDate = await call("add_vaccination", { patient_id: a.id, vaccine_name: `VAX_NODATE_${mark}`, next_due_at: dueSoon });
+  toolErr(vaxNoDate, -32602, "vaccinated_at_required", "add_vaccination missing date");
+  const vaxNoName = await call("add_vaccination", { patient_id: a.id, vaccinated_at: "2026-09-01" });
+  toolErr(vaxNoName, -32602, "vaccine_name_required", "add_vaccination missing name");
   const vaxA = await call("add_vaccination", {
     patient_id: a.id, vaccine_name: `VAX_A_${mark}`, dose_number: 0, total_doses: 3,
     vaccinated_at: "2026-09-01", next_due_at: dueSoon,
   });
   ok(vaxA.id && vaxA.id.startsWith("vax_"), "add_vaccination id");
-  const vaxPast = await call("add_vaccination", {
-    patient_id: a.id, vaccine_name: `VAX_PAST_${mark}`, dose_number: 1, total_doses: 1,
-    next_due_at: duePast,
+  const vaxA2 = await call("add_vaccination", {
+    patient_id: a.id, vaccine_name: `VAX_A2_${mark}`, dose_number: 1, total_doses: 1,
+    vaccinated_at: "2026-08-01",
   });
+  ok(vaxA2.id.startsWith("vax_"), "second completed dose");
   const vaxB = await call("add_vaccination", {
     patient_id: b.id, vaccine_name: `VAX_B_${mark}`, dose_number: 2, total_doses: 2,
-    next_due_at: dueFar,
+    vaccinated_at: "2026-07-01",
   });
-  const vaxNone = await call("add_vaccination", {
-    patient_id: b.id, vaccine_name: `VAX_NONE_${mark}`, dose_number: 1,
-  });
-  ok(vaxNone.id.startsWith("vax_"), "vaccination without due date");
-  const vaxNoName = await call("add_vaccination", { patient_id: a.id });
-  toolErr(vaxNoName, -32602, "vaccine_name_required", "add_vaccination missing name");
+  ok(vaxB.id.startsWith("vax_"), "vaccination for B");
 
-  const up30 = await call("upcoming_vaccinations", { days: 30 });
-  const upNames30 = up30.vaccinations.map((v) => v.vaccine_name);
-  ok(upNames30.includes(`VAX_A_${mark}`), "upcoming includes due-soon");
-  ok(!upNames30.includes(`VAX_B_${mark}`), "upcoming hides far-future other patient");
-  ok(!upNames30.includes(`VAX_PAST_${mark}`), "upcoming hides overdue");
-  ok(!upNames30.includes(`VAX_NONE_${mark}`), "upcoming hides null next_due_at");
-  const soon = up30.vaccinations.find((v) => v.vaccine_name === `VAX_A_${mark}`);
-  eq(soon.patient_name, `本人_${mark}`, "upcoming joins the right patient");
-  eq(soon.patient_id, a.id, "upcoming patient_id");
+  const vaxListNo = await call("list_vaccinations", {});
+  toolErr(vaxListNo, -32602, "patient_id_required", "list_vaccinations requires patient_id");
+  const vaxListA = await call("list_vaccinations", { patient_id: a.id });
+  eq(vaxListA.vaccinations.map((row) => row.vaccinated_at).join(","), "2026-09-01,2026-08-01", "list_vaccinations date desc");
+  ok(vaxListA.vaccinations.every((row) => row.patient_id === a.id), "list_vaccinations A only A");
+  const soon = vaxListA.vaccinations.find((row) => row.id === vaxA.id);
   eq(soon.dose_number, 0, "dose_number 0 preserved");
   eq(soon.total_doses, 3, "total_doses roundtrip");
   eq(soon.vaccinated_at, "2026-09-01", "vaccinated_at roundtrip");
-  eq(soon.next_due_at, dueSoon, "next_due_at roundtrip");
+  eq(soon.next_due_at ?? null, null, "next_due_at is not stored");
+  const vaxListB = await call("list_vaccinations", { patient_id: b.id });
+  eq(vaxListB.vaccinations.length, 1, "list_vaccinations B count");
+  eq(vaxListB.vaccinations[0].vaccine_name, `VAX_B_${mark}`, "list B name");
+  ok(!vaxListA.vaccinations.some((row) => row.vaccine_name === `VAX_B_${mark}`), "list A hides B");
+  const gone = await call("upcoming_vaccinations", { days: 30 });
+  eq(gone.__error && gone.__error.code, -32601, "upcoming_vaccinations removed");
 
-  const upDefault = await call("upcoming_vaccinations", {});
-  ok(upDefault.vaccinations.some((v) => v.vaccine_name === `VAX_A_${mark}`), "default window includes soon");
-  ok(!upDefault.vaccinations.some((v) => v.vaccine_name === `VAX_B_${mark}`), "default window hides far");
-
-  const upWide = await call("upcoming_vaccinations", { days: 200 });
-  ok(upWide.vaccinations.some((v) => v.vaccine_name === `VAX_A_${mark}`), "wide window includes A");
-  ok(upWide.vaccinations.some((v) => v.vaccine_name === `VAX_B_${mark}`), "wide window includes B");
-  const far = upWide.vaccinations.find((v) => v.vaccine_name === `VAX_B_${mark}`);
-  eq(far.patient_name, `父亲_${mark}`, "far vaccine keeps B name");
-  ok(!upWide.vaccinations.some((v) => v.vaccine_name === `VAX_PAST_${mark}`), "wide window still hides overdue");
-
-  const upBadDays = await call("upcoming_vaccinations", { days: "30; DROP TABLE patients" });
-  ok(upBadDays.vaccinations.some((v) => v.vaccine_name === `VAX_A_${mark}`), "non-integer days falls back to 30");
-  ok(!upBadDays.vaccinations.some((v) => v.vaccine_name === `VAX_B_${mark}`), "injection days does not widen window");
-  const still = await call("list_patients", {});
-  ok(still.patients.some((p) => p.id === a.id), "patients survive days injection");
-
-  // 概况：只看该病人的在用药、未来疫苗、最近 3 次就诊
+  // 概况：只看该病人的在用药、最近 3 次就诊。下次疫苗不在病历里。
   const sumA = await call("health_summary", { patient_id: a.id });
   const medsA = sumA.active_medications.map((m) => m.drug_name);
   ok(medsA.includes(`DRUG_A_ON_${mark}`), "summary A active drug");
   ok(!medsA.includes(`DRUG_A_OFF_${mark}`), "summary A hides finished drug");
   ok(!medsA.includes(`DRUG_B_${mark}`), "summary A hides B drug");
   eq(sumA.active_medications.find((m) => m.drug_name === `DRUG_A_ON_${mark}`).spec, "0.25g", "summary spec");
-  const vaxSumA = sumA.upcoming_vaccines.map((v) => v.vaccine_name);
-  ok(vaxSumA.includes(`VAX_A_${mark}`), "summary A upcoming vaccine");
-  ok(!vaxSumA.includes(`VAX_B_${mark}`), "summary A hides B vaccine");
-  ok(!vaxSumA.includes(`VAX_PAST_${mark}`), "summary A hides overdue vaccine");
+  ok(!("upcoming_vaccines" in sumA), "summary does not list upcoming vaccines");
   const dxA = sumA.recent_visits.map((v) => v.diagnosis);
   eq(dxA.join(","), [`DX_A4_${mark}`, `DX_A3_${mark}`, `DX_A2_${mark}`].join(","), "summary A 3 newest visits");
   ok(!dxA.some((d) => String(d).includes(`DX_B_${mark}`)), "summary visits hide B");
 
   const sumB = await call("health_summary", { patient_id: b.id });
   eq(sumB.active_medications.map((m) => m.drug_name).join(","), `DRUG_B_${mark}`, "summary B only B drug");
-  ok(sumB.upcoming_vaccines.some((v) => v.vaccine_name === `VAX_B_${mark}`), "summary B far vaccine still listed");
-  ok(!sumB.upcoming_vaccines.some((v) => v.vaccine_name === `VAX_A_${mark}`), "summary B hides A vaccine");
   eq(sumB.recent_visits.length, 1, "summary B one visit");
   eq(sumB.recent_visits[0].diagnosis, `DX_B_${mark}`, "summary B diagnosis");
   eq(sumB.recent_visits[0].hospital, `医院B_${mark}`, "summary B hospital");
+
+  // 已写下的记录可以更正，但不能改成别人的，也不能抹掉接种日期
+  const vaxEmpty = await call("update_vaccination", { id: vaxA.id, patient_id: a.id });
+  toolErr(vaxEmpty, -32602, "nothing_to_update", "update_vaccination empty patch");
+  const vaxNoId = await call("update_vaccination", { patient_id: a.id, vaccinated_at: utcDate(0) });
+  toolErr(vaxNoId, -32602, "id_required", "update_vaccination missing id");
+  const vaxMissing = await call("update_vaccination", { id: "vax_missing", patient_id: a.id, vaccinated_at: utcDate(0) });
+  toolErr(vaxMissing, -32602, "vaccination_not_found", "update_vaccination unknown id");
+  const vaxCross = await call("update_vaccination", {
+    id: vaxA.id, patient_id: b.id, vaccinated_at: utcDate(0),
+  });
+  toolErr(vaxCross, -32602, "vaccination_not_found", "update_vaccination other patient");
+  const vaxAfterCross = (await call("list_vaccinations", { patient_id: a.id })).vaccinations.find((row) => row.id === vaxA.id);
+  eq(vaxAfterCross.vaccinated_at, "2026-09-01", "cross update keeps vaccinated_at");
+  eq(vaxAfterCross.dose_number, 0, "cross update keeps dose 0");
+  const vaxBlank = await call("update_vaccination", { id: vaxA.id, patient_id: a.id, vaccine_name: " " });
+  toolErr(vaxBlank, -32602, "vaccine_name_required", "update_vaccination blank name");
+  const vaxBadDose = await call("update_vaccination", { id: vaxA.id, patient_id: a.id, dose_number: 1.5 });
+  toolErr(vaxBadDose, -32602, "invalid_dose_number", "update_vaccination fractional dose");
+  const vaxClear = await call("update_vaccination", { id: vaxA.id, patient_id: a.id, vaccinated_at: "" });
+  toolErr(vaxClear, -32602, "vaccinated_at_required", "update_vaccination cannot clear date");
+  const vaxFixed = await call("update_vaccination", {
+    id: vaxA2.id, patient_id: a.id, vaccine_name: `VAX_A2_FIXED_${mark}`,
+    vaccinated_at: utcDate(0), dose_number: 4, total_doses: 4,
+  });
+  eq(vaxFixed.ok, true, "update_vaccination corrects a recorded dose");
+  const fixedRow = (await call("list_vaccinations", { patient_id: a.id })).vaccinations.find((row) => row.id === vaxA2.id);
+  eq(fixedRow.vaccine_name, `VAX_A2_FIXED_${mark}`, "vaccine_name updated");
+  eq(fixedRow.vaccinated_at, utcDate(0), "vaccinated_at corrected");
+  eq(fixedRow.dose_number, 4, "dose_number corrected");
+  eq(fixedRow.total_doses, 4, "total_doses corrected");
+  eq((await call("list_vaccinations", { patient_id: a.id })).vaccinations.find((row) => row.id === vaxA.id).vaccinated_at,
+    "2026-09-01", "correcting one dose leaves the other");
 
   const sumAll = await call("health_summary", {});
   ok(sumAll.active_medications.some((m) => m.drug_name === `DRUG_A_ON_${mark}`), "family summary has A drug");
@@ -580,7 +595,7 @@ async function main() {
   eq((await call("list_insurance", { patient_id: b.id })).insurance.length, 1, "delete leaves the other patient");
 
   // 病历列表必须指定病人；处方只能由所属病人更新
-  for (const tool of ["list_visits", "list_prescriptions", "list_lab_reports"]) {
+  for (const tool of ["list_visits", "list_prescriptions", "list_lab_reports", "list_vaccinations"]) {
     toolErr(await call(tool, {}), -32602, "patient_id_required", `${tool} requires patient_id`);
   }
   const rxOfB = (await call("list_prescriptions", { patient_id: b.id })).prescriptions[0];

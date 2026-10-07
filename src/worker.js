@@ -45,6 +45,13 @@ const MAX_AVATAR_BYTES = 2 * 1024 * 1024;
 const ALLERGY_SEVERITIES = ["mild", "moderate", "severe"];
 const CHRONIC_STATUSES = ["active", "managed", "cured"];
 
+// 剂次允许 0。空字符串或 null 表示清空；其它类型拒绝，避免把 "1; drop" 写进整数列
+function optionalDose(value, errorName) {
+  if (value === null || value === "") return null;
+  if (typeof value === "number" && Number.isInteger(value)) return value;
+  throw new InputError(errorName);
+}
+
 const FILE_TYPES = [
   { ext: "jpg", mime: "image/jpeg", check: isJpeg },
   { ext: "jpeg", mime: "image/jpeg", check: isJpeg },
@@ -287,15 +294,24 @@ const MCP_TOOLS = [
       patient_id: { type: "string" },
       lab_report_id: { type: "string" } },
       required: ["patient_id"] } },
-  { name: "add_vaccination", description: "添加疫苗接种记录",
+  { name: "add_vaccination", description: "记下一次已经完成的疫苗接种",
     inputSchema: { type: "object", properties: {
       patient_id: { type: "string" }, vaccine_name: { type: "string" },
       dose_number: { type: "integer" }, total_doses: { type: "integer" },
-      vaccinated_at: { type: "string" }, next_due_at: { type: "string" } },
-      required: ["patient_id", "vaccine_name"] } },
-  { name: "upcoming_vaccinations", description: "即将到期的疫苗",
-    inputSchema: { type: "object", properties: { days: { type: "integer" } } } },
-  { name: "health_summary", description: "健康概况：在吃什么药、下次疫苗、最近就诊。不传 patient_id 时汇总所有病人，每条带 patient_id 和 patient_name",
+      vaccinated_at: { type: "string", description: "实际接种日期，必填" } },
+      required: ["patient_id", "vaccine_name", "vaccinated_at"] } },
+  { name: "list_vaccinations", description: "列出某病人已经完成的疫苗接种记录",
+    inputSchema: { type: "object", properties: { patient_id: { type: "string" } },
+      required: ["patient_id"] } },
+  { name: "update_vaccination", description: "更正一条已经写下的疫苗接种记录（仅限该病人的记录），例如写错名称、剂次或接种日期。不能用来把待接种改成已接种",
+    inputSchema: { type: "object", properties: {
+      id: { type: "string" }, patient_id: { type: "string" },
+      vaccine_name: { type: "string" },
+      dose_number: { type: "integer", description: "剂次，0 有效；传空字符串清空" },
+      total_doses: { type: "integer", description: "总剂次；传空字符串清空" },
+      vaccinated_at: { type: "string", description: "实际接种日期。不能传空" } },
+      required: ["id", "patient_id"] } },
+  { name: "health_summary", description: "健康概况：在吃什么药、最近就诊。不传 patient_id 时汇总所有病人，每条带 patient_id 和 patient_name",
     inputSchema: { type: "object", properties: { patient_id: { type: "string" } } } },
 { name: "list_allergies", description: "列出某病人的过敏史",
     inputSchema: { type: "object", properties: { patient_id: { type: "string" } },
@@ -601,23 +617,49 @@ async function callTool(name, args, env) {
   }
   if (name === "add_vaccination") {
     await requirePatient(DB, args.patient_id);
-    if (!args.vaccine_name) throw new InputError("vaccine_name_required");
+    if (!args.vaccine_name || !String(args.vaccine_name).trim()) throw new InputError("vaccine_name_required");
+    if (!args.vaccinated_at || !String(args.vaccinated_at).trim()) throw new InputError("vaccinated_at_required");
     const id = newId("vax");
-    await DB.prepare(`INSERT INTO vaccinations (id,patient_id,vaccine_name,dose_number,total_doses,vaccinated_at,next_due_at)
-      VALUES (?,?,?,?,?,?,?)`).bind(id, args.patient_id, args.vaccine_name,
+    await DB.prepare(`INSERT INTO vaccinations (id,patient_id,vaccine_name,dose_number,total_doses,vaccinated_at)
+      VALUES (?,?,?,?,?,?)`).bind(id, args.patient_id, String(args.vaccine_name).trim(),
       args.dose_number ?? null, args.total_doses ?? null,
-      args.vaccinated_at || null, args.next_due_at || null).run();
+      String(args.vaccinated_at).trim()).run();
     return { id };
   }
-  if (name === "upcoming_vaccinations") {
-    const days = Number.isInteger(args.days) && args.days > 0 ? args.days : 30;
-    const r = await DB.prepare(`SELECT v.*, p.name as patient_name FROM vaccinations v
-      JOIN patients p ON v.patient_id = p.id
-      WHERE v.next_due_at IS NOT NULL
-      AND date(v.next_due_at) >= date('now')
-      AND date(v.next_due_at) <= date('now', '+' || ? || ' days')
-      ORDER BY v.next_due_at`).bind(days).all();
+  if (name === "list_vaccinations") {
+    await requirePatient(DB, args.patient_id);
+    const r = await DB.prepare(
+      "SELECT * FROM vaccinations WHERE patient_id=? AND vaccinated_at IS NOT NULL ORDER BY vaccinated_at DESC")
+      .bind(args.patient_id).all();
     return { vaccinations: r.results };
+  }
+  if (name === "update_vaccination") {
+    if (!args.id) throw new InputError("id_required");
+    await requirePatient(DB, args.patient_id);
+    const sets = [], params = [];
+    if (args.vaccine_name !== undefined) {
+      if (!args.vaccine_name || !String(args.vaccine_name).trim()) throw new InputError("vaccine_name_required");
+      sets.push("vaccine_name=?"); params.push(String(args.vaccine_name).trim());
+    }
+    if (args.dose_number !== undefined) {
+      sets.push("dose_number=?"); params.push(optionalDose(args.dose_number, "invalid_dose_number"));
+    }
+    if (args.total_doses !== undefined) {
+      sets.push("total_doses=?"); params.push(optionalDose(args.total_doses, "invalid_total_doses"));
+    }
+    if (args.vaccinated_at !== undefined) {
+      if (!args.vaccinated_at || !String(args.vaccinated_at).trim()) throw new InputError("vaccinated_at_required");
+      sets.push("vaccinated_at=?"); params.push(String(args.vaccinated_at).trim());
+    }
+    if (!sets.length) throw new InputError("nothing_to_update");
+    const owned = await DB.prepare(
+      "SELECT id FROM vaccinations WHERE id=? AND patient_id=? AND vaccinated_at IS NOT NULL")
+      .bind(args.id, args.patient_id).first();
+    if (!owned) throw new InputError("vaccination_not_found");
+    params.push(args.id, args.patient_id);
+    await DB.prepare(
+      `UPDATE vaccinations SET ${sets.join(",")} WHERE id=? AND patient_id=?`).bind(...params).run();
+    return { ok: true };
   }
   if (name === "health_summary") {
     const pid = args.patient_id;
@@ -625,9 +667,6 @@ async function callTool(name, args, env) {
     const rx = await DB.prepare(
       `SELECT patient_id, drug_name, spec, usage FROM prescriptions WHERE status='active'`
       + (pid ? " AND patient_id=?" : "")).bind(...(pid ? [pid] : [])).all();
-    const vax = await DB.prepare(
-      `SELECT patient_id, vaccine_name, dose_number, total_doses, next_due_at FROM vaccinations WHERE next_due_at IS NOT NULL AND date(next_due_at) >= date('now')`
-      + (pid ? " AND patient_id=?" : "") + ` ORDER BY next_due_at LIMIT 5`).bind(...(pid ? [pid] : [])).all();
     const visit = await DB.prepare(
       `SELECT patient_id, visit_date, hospital, diagnosis FROM visits`
       + (pid ? " WHERE patient_id=?" : "") + ` ORDER BY visit_date DESC LIMIT 3`).bind(...(pid ? [pid] : [])).all();
@@ -637,7 +676,6 @@ async function callTool(name, args, env) {
     const withName = (rows) => (rows || []).map((row) => ({ ...row, patient_name: names.get(row.patient_id) ?? null }));
     return {
       active_medications: withName(rx.results),
-      upcoming_vaccines: withName(vax.results),
       recent_visits: withName(visit.results),
     };
   }

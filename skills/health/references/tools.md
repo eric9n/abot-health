@@ -1,6 +1,6 @@
 # MCP 工具
 
-摘自 `src/worker.js` 的 `MCP_TOOLS`，共 34 个。`*` 表示该参数在 `inputSchema.required` 里。参数说明只保留源码里的 `description`。
+摘自 `src/worker.js` 的 `MCP_TOOLS`，共 35 个。`*` 表示该参数在 `inputSchema.required` 里。参数说明只保留源码里的 `description`。
 
 ## add_patient
 
@@ -153,7 +153,7 @@
 
 ## add_vaccination
 
-添加疫苗接种记录
+记下一次已经完成的疫苗接种
 
 参数：
 
@@ -161,20 +161,32 @@
 - `vaccine_name`*（string）
 - `dose_number`（integer）
 - `total_doses`（integer）
-- `vaccinated_at`（string）
-- `next_due_at`（string）
+- `vaccinated_at`*（string） — 实际接种日期，必填
 
-## upcoming_vaccinations
+## list_vaccinations
 
-即将到期的疫苗
+列出某病人已经完成的疫苗接种记录
 
 参数：
 
-- `days`（integer）
+- `patient_id`*（string）
+
+## update_vaccination
+
+更正一条已经写下的疫苗接种记录（仅限该病人的记录），例如写错名称、剂次或接种日期。不能用来把待接种改成已接种
+
+参数：
+
+- `id`*（string）
+- `patient_id`*（string）
+- `vaccine_name`（string）
+- `dose_number`（integer） — 剂次，0 有效；传空字符串清空
+- `total_doses`（integer） — 总剂次；传空字符串清空
+- `vaccinated_at`（string） — 实际接种日期。不能传空
 
 ## health_summary
 
-健康概况：在吃什么药、下次疫苗、最近就诊。不传 patient_id 时汇总所有病人，每条带 patient_id 和 patient_name
+健康概况：在吃什么药、最近就诊。不传 patient_id 时汇总所有病人，每条带 patient_id 和 patient_name
 
 参数：
 

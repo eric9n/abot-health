@@ -229,10 +229,11 @@ const env = mcpEnv();
   const r3 = await postRpc(env, { jsonrpc: "2.0", id: 1, method: "tools/list" });
   eq(r3.status, 200, "auth: email only -> 200");
   const tools = (await r3.json()).result.tools;
-  eq(tools.length, 34, "tools/list: 34 tools");
+  eq(tools.length, 35, "tools/list: 35 tools");
   for (const name of [
     "upload_lab_report_file", "get_lab_report_file", "list_lab_report_files",
     "upload_patient_avatar",
+    "list_vaccinations", "update_vaccination",
     "list_insurance", "add_insurance", "update_insurance", "delete_insurance",
   ]) {
     ok(tools.some((t) => t.name === name), `tools/list includes ${name}`);
@@ -273,7 +274,7 @@ ok(env.DB.__tables.prescriptions.find((r) => r.id === rx.id).status !== "finishe
 const up = await call(env, "update_prescription", { id: rx.id, patient_id: p.id, status: "finished" });
 eq(up.ok, true, "update_prescription valid ok");
 
-for (const tool of ["list_visits", "list_prescriptions", "list_lab_reports"]) {
+for (const tool of ["list_visits", "list_prescriptions", "list_lab_reports", "list_vaccinations"]) {
   const noPid = await call(env, tool, {});
   eq(noPid.__error && noPid.__error.message, "patient_id_required", `${tool} requires patient_id`);
   const badPid = await call(env, tool, { patient_id: "nope" });
@@ -282,23 +283,65 @@ for (const tool of ["list_visits", "list_prescriptions", "list_lab_reports"]) {
 
 const labBad = await call(env, "add_lab_report", { patient_id: "nope", report_date: "2026-10-01" });
 eq(labBad.__error && labBad.__error.code, -32602, "add_lab_report bogus patient -> -32602");
-const vaxBad = await call(env, "add_vaccination", { patient_id: "nope", vaccine_name: "狂犬" });
+const vaxBad = await call(env, "add_vaccination", { patient_id: "nope", vaccine_name: "狂犬", vaccinated_at: "2026-10-07" });
 eq(vaxBad.__error && vaxBad.__error.code, -32602, "add_vaccination bogus patient -> -32602");
-const vax = await call(env, "add_vaccination", { patient_id: p.id, vaccine_name: "狂犬疫苗", dose_number: 1, next_due_at: "2026-10-07" });
+const vaxNoDate = await call(env, "add_vaccination", { patient_id: p.id, vaccine_name: "狂犬疫苗", next_due_at: "2026-10-07" });
+eq(vaxNoDate.__error && vaxNoDate.__error.message, "vaccinated_at_required", "add_vaccination requires a completed date");
+const vax = await call(env, "add_vaccination", {
+  patient_id: p.id, vaccine_name: "狂犬疫苗", dose_number: 1, vaccinated_at: "2026-09-16", next_due_at: "2026-10-07",
+});
 ok(vax.id.startsWith("vax_"), "add_vaccination valid ok");
+const vax2 = await call(env, "add_vaccination", { patient_id: p.id, vaccine_name: "破伤风疫苗", vaccinated_at: "2026-09-16" });
+ok(vax2.id.startsWith("vax_"), "add_vaccination second dose");
 
 const sum = await call(env, "health_summary", { patient_id: p.id });
 eq(sum.active_medications.length, 0, "health_summary: finished rx not active");
+ok(!("upcoming_vaccines" in sum), "health_summary does not schedule vaccines");
 const sumBad = await call(env, "health_summary", { patient_id: "nope" });
 eq(sumBad.__error && sumBad.__error.message, "patient_not_found", "health_summary bogus patient");
 
-const up2 = await call(env, "upcoming_vaccinations", { days: 30 });
-eq(up2.vaccinations.length, 1, "upcoming_vaccinations finds due vaccine");
-eq(up2.vaccinations[0].patient_name, "本人", "upcoming_vaccinations joins patient name");
-await call(env, "add_vaccination", { patient_id: p.id, vaccine_name: "过期苗", next_due_at: "2020-01-01" });
-const upPast = await call(env, "upcoming_vaccinations", { days: 30 });
-eq(upPast.vaccinations.length, 1, "upcoming_vaccinations skips overdue");
-eq(upPast.vaccinations[0].vaccine_name, "狂犬疫苗", "upcoming keeps the future dose");
+const removedUpcoming = await call(env, "upcoming_vaccinations", { days: 30 });
+eq(removedUpcoming.__error && removedUpcoming.__error.code, -32601, "upcoming_vaccinations is not a health tool");
+
+const listedVax = await call(env, "list_vaccinations", { patient_id: p.id });
+eq(listedVax.vaccinations.length, 2, "list_vaccinations count");
+ok(listedVax.vaccinations.every((row) => row.patient_id === p.id), "list_vaccinations stays on patient");
+const stored = listedVax.vaccinations.find((row) => row.id === vax.id);
+eq(stored.vaccinated_at, "2026-09-16", "vaccinated_at stored");
+eq(stored.next_due_at ?? null, null, "next_due_at is not stored on the record");
+const vaxEmpty = await call(env, "update_vaccination", { id: vax.id, patient_id: p.id });
+eq(vaxEmpty.__error && vaxEmpty.__error.message, "nothing_to_update", "update_vaccination empty patch");
+const vaxSchedule = await call(env, "update_vaccination", { id: vax.id, patient_id: p.id, next_due_at: "2026-10-07" });
+eq(vaxSchedule.__error && vaxSchedule.__error.message, "nothing_to_update", "update_vaccination ignores a due date");
+const vaxNoId = await call(env, "update_vaccination", { patient_id: p.id, vaccinated_at: "2026-10-07" });
+eq(vaxNoId.__error && vaxNoId.__error.message, "id_required", "update_vaccination missing id");
+const vaxCross = await call(env, "update_vaccination", {
+  id: vax.id, patient_id: p2.id, vaccinated_at: "2026-10-07",
+});
+eq(vaxCross.__error && vaxCross.__error.message, "vaccination_not_found", "update_vaccination other patient");
+eq(env.DB.__tables.vaccinations.find((r) => r.id === vax.id).vaccinated_at, "2026-09-16", "cross update leaves vaccinated_at");
+const vaxBlankName = await call(env, "update_vaccination", { id: vax.id, patient_id: p.id, vaccine_name: " " });
+eq(vaxBlankName.__error && vaxBlankName.__error.message, "vaccine_name_required", "update_vaccination blank name");
+const vaxBadDose = await call(env, "update_vaccination", { id: vax.id, patient_id: p.id, dose_number: "4" });
+eq(vaxBadDose.__error && vaxBadDose.__error.message, "invalid_dose_number", "update_vaccination rejects string dose");
+const vaxClearDate = await call(env, "update_vaccination", { id: vax.id, patient_id: p.id, vaccinated_at: "" });
+eq(vaxClearDate.__error && vaxClearDate.__error.message, "vaccinated_at_required", "update_vaccination cannot clear the date");
+eq(env.DB.__tables.vaccinations.find((r) => r.id === vax.id).vaccinated_at, "2026-09-16", "rejected clear keeps vaccinated_at");
+const vaxFix = await call(env, "update_vaccination", {
+  id: vax.id, patient_id: p.id, vaccinated_at: "2026-10-07", dose_number: 4, total_doses: 4,
+});
+eq(vaxFix.ok, true, "update_vaccination corrects a recorded dose");
+const afterVax = (await call(env, "list_vaccinations", { patient_id: p.id })).vaccinations.find((row) => row.id === vax.id);
+eq(afterVax.vaccinated_at, "2026-10-07", "vaccinated_at corrected");
+eq(afterVax.dose_number, 4, "dose_number updated");
+eq(afterVax.total_doses, 4, "total_doses updated");
+eq(afterVax.vaccine_name, "狂犬疫苗", "omitted name stays");
+const clearedDose = await call(env, "update_vaccination", { id: vax.id, patient_id: p.id, dose_number: "", total_doses: null });
+eq(clearedDose.ok, true, "update_vaccination clears doses");
+const clearedRow = (await call(env, "list_vaccinations", { patient_id: p.id })).vaccinations.find((row) => row.id === vax.id);
+eq(clearedRow.dose_number, null, "empty dose_number clears");
+eq(clearedRow.total_doses, null, "null total_doses clears");
+eq(clearedRow.vaccinated_at, "2026-10-07", "clearing doses keeps vaccinated_at");
 
 const vP2 = await call(env, "add_visit", { patient_id: p2.id, visit_date: "2026-01-01" });
 const cross = await call(env, "add_prescription", { patient_id: p.id, visit_id: vP2.id, drug_name: "串方" });

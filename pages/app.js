@@ -41,7 +41,6 @@ const state = {
   detailError: "",
   generation: 0,
   fileCache: new Map(),
-  dueCounts: {},
   lightboxFile: null,
   avatarError: "",
   avatarUploading: false,
@@ -143,17 +142,6 @@ function fileKind(file) {
   return "other";
 }
 
-function dueVaccines(list) {
-  return (list || [])
-    .map((row) => {
-      const day = parseDay(row.next_due_at);
-      if (!day) return null;
-      return { ...row, due: day, overdue: day < startOfToday() };
-    })
-    .filter(Boolean)
-    .sort((a, b) => a.due - b.due);
-}
-
 const INSURANCE_SOON_DAYS = 30;
 
 function expiringInsurance(list) {
@@ -237,7 +225,6 @@ function renderPatientList() {
       el("div", { class: "name", text: patient.name || "未命名" }),
       meta ? el("div", { class: "meta", text: meta }) : null,
       patient.relationship ? el("span", { class: "tag", text: patient.relationship }) : null,
-      state.dueCounts[patient.id] ? el("span", { class: "tag tag-due", title: "有待接种疫苗", text: "待接种" }) : null,
     ]);
     list.append(button);
   }
@@ -377,33 +364,17 @@ function renderLabs(detail) {
 }
 
 function renderVaccines(detail) {
-  if (!detail.vaccinations.length) return el("p", { class: "hint", text: "还没有疫苗记录" });
-  const due = dueVaccines(detail.vaccinations);
-  const banner = due.length
-    ? el("div", { class: "note" }, [
-      el("div", { text: due.some((row) => row.overdue) ? `有 ${due.length} 项待接种，含已逾期` : `有 ${due.length} 项待接种` }),
-      el("ul", {}, due.map((row) => el("li", {
-        text: [row.vaccine_name, doseText(row), formatDate(row.next_due_at), row.overdue ? "已逾期" : "待接种"].filter(Boolean).join(" · "),
-      }))),
-    ])
-    : null;
-  const rows = [...detail.vaccinations].sort((a, b) => String(b.vaccinated_at || b.next_due_at || "").localeCompare(String(a.vaccinated_at || a.next_due_at || "")));
-  const stack = el("div", {}, [banner]);
+  const rows = (detail.vaccinations || [])
+    .filter((row) => row.vaccinated_at)
+    .sort((a, b) => String(b.vaccinated_at).localeCompare(String(a.vaccinated_at)));
+  if (!rows.length) return el("p", { class: "hint", text: "还没有疫苗记录" });
+  const stack = el("div", {});
   for (const row of rows) {
-    const pending = due.find((item) => item.id === row.id);
-    const when = pending ? formatDate(row.next_due_at) : formatDate(row.vaccinated_at);
-    const whenLabel = pending ? `${when} ${pending.overdue ? "已逾期" : "待接种"}` : when;
-    stack.append(el("article", { class: "record" + (pending ? " is-due" : "") }, [
-      whenLabel ? el("div", { class: "date", text: whenLabel }) : null,
+    stack.append(el("article", { class: "record" }, [
+      el("div", { class: "date", text: formatDate(row.vaccinated_at) }),
       el("div", { class: "title" }, [
         [row.vaccine_name || "未命名疫苗", doseText(row)].filter(Boolean).join(" "),
-        pending
-          ? badge(pending.overdue ? "已逾期" : "待接种", "yellow")
-          : (row.vaccinated_at ? badge("已接种", "green") : null),
-      ]),
-      sentence([
-        pending && row.vaccinated_at ? `接种日期：${formatDate(row.vaccinated_at)}` : "",
-        !pending && row.next_due_at ? `下次接种：${formatDate(row.next_due_at)}` : "",
+        badge("已接种", "green"),
       ]),
     ]));
   }
@@ -621,7 +592,6 @@ function renderMain() {
       ]),
     ]));
   }
-  const due = dueVaccines(state.detail.vaccinations);
   const expiring = expiringInsurance(state.detail.insurance);
   panel.append(el("div", { class: "tabs", role: "tablist" }, TABS.map((tab) => {
     const button = el("button", {
@@ -634,7 +604,6 @@ function renderMain() {
       onclick: () => setTab(tab.id),
       text: tab.label,
     });
-    if (tab.id === "vaccines" && due.length) button.append(el("span", { class: "badge badge-yellow", text: String(due.length) }));
     if (tab.id === "allergies" && severe.length) button.append(el("span", { class: "badge badge-red", text: String(severe.length) }));
     if (tab.id === "insurance" && expiring.length) button.append(el("span", { class: "badge", text: String(expiring.length) }));
     return button;
@@ -737,7 +706,6 @@ async function selectPatient(id) {
     const data = await api(`/api/patient?id=${encodeURIComponent(id)}`);
     if (gen !== state.generation) return;
     if (data.error) throw new Error(data.error);
-    state.dueCounts[id] = dueVaccines(data.vaccinations).length;
     state.detail = { patientId: id, ...data };
     state.detailError = "";
   } catch (err) {
